@@ -14,6 +14,7 @@ pub enum ProjectType {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProjectMeta {
     pub name: String,
     #[serde(rename = "type")]
@@ -44,6 +45,7 @@ fn default_cflags() -> Vec<String> {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Prototype {
     pub name: String,
     pub signature: String,
@@ -52,6 +54,7 @@ pub struct Prototype {
 
 /// Type Functions : 1 exercice piscine.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Task {
     pub name: String,
     pub delivery: String, // ex. "my_print_alpha.c"
@@ -71,6 +74,7 @@ pub struct Task {
 
 /// Type Binary : 1 test end-to-end.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FunctionalTest {
     pub name: String,
     #[serde(default)]

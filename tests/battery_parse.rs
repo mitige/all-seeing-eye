@@ -3,8 +3,44 @@
 use seeyou::battery::model::ProjectType;
 use seeyou::battery::Battery;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use tempfile::TempDir;
+
+/// `XDG_CONFIG_HOME` est process-global : tous les tests qui y touchent
+/// (directement ou via `discover`) se sérialisent sur ce mutex.
+static XDG_MUTEX: Mutex<()> = Mutex::new(());
+
+/// Positionne `XDG_CONFIG_HOME` et le restaure à sa valeur initiale au drop.
+struct XdgConfigGuard(Option<std::ffi::OsString>);
+
+impl XdgConfigGuard {
+    fn set(path: &Path) -> Self {
+        let ancien = std::env::var_os("XDG_CONFIG_HOME");
+        std::env::set_var("XDG_CONFIG_HOME", path);
+        Self(ancien)
+    }
+}
+
+impl Drop for XdgConfigGuard {
+    fn drop(&mut self) {
+        match &self.0 {
+            Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
+            None => std::env::remove_var("XDG_CONFIG_HOME"),
+        }
+    }
+}
+
+/// Crée `<config>/.config/seeyou/batteries`, y écrit `files`
+/// (nom → contenu) et renvoie le chemin du dossier `batteries`.
+fn setup_config_batteries(config: &TempDir, files: &[(&str, &str)]) -> PathBuf {
+    let batteries = config.path().join(".config/seeyou/batteries");
+    fs::create_dir_all(&batteries).unwrap();
+    for (nom, contenu) in files {
+        fs::write(batteries.join(nom), contenu).unwrap();
+    }
+    batteries
+}
 
 /// Écrit un `moulinette.toml` dans `dir` et renvoie son chemin.
 fn write_battery(dir: &TempDir, content: &str) -> PathBuf {
@@ -45,7 +81,11 @@ timeout_ms = 5000
 fn parse_batterie_day03_complete() {
     let dir = TempDir::new().unwrap();
     fs::create_dir_all(dir.path().join("expected")).unwrap();
-    fs::write(dir.path().join("expected/ex02.txt"), "zyxwvutsrqponmlkjihgfedcba\n").unwrap();
+    fs::write(
+        dir.path().join("expected/ex02.txt"),
+        "zyxwvutsrqponmlkjihgfedcba\n",
+    )
+    .unwrap();
     let path = write_battery(&dir, DAY03_TOML);
 
     let b = Battery::load(&path).unwrap();
@@ -71,13 +111,19 @@ fn parse_batterie_day03_complete() {
     let ex01 = &b.task[0];
     assert_eq!(ex01.name, "ex01");
     assert_eq!(ex01.delivery, "my_print_alpha.c");
-    assert_eq!(ex01.prototype.as_deref(), Some("void my_print_alpha(void);"));
+    assert_eq!(
+        ex01.prototype.as_deref(),
+        Some("void my_print_alpha(void);")
+    );
     assert_eq!(ex01.harness, PathBuf::from("harness/ex01_main.c"));
     assert_eq!(ex01.extra_sources, vec![PathBuf::from("lib/my_putchar.c")]);
     assert_eq!(ex01.stderr, "");
     assert_eq!(ex01.exit_code, 0);
     assert_eq!(ex01.timeout_ms, 2000);
-    assert_eq!(b.expected_stdout_of_task(ex01).unwrap(), "abcdefghijklmnopqrstuvwxyz");
+    assert_eq!(
+        b.expected_stdout_of_task(ex01).unwrap(),
+        "abcdefghijklmnopqrstuvwxyz"
+    );
 
     // [[task]] ex02 : stdout via fichier relatif à root, timeout surchargé
     let ex02 = &b.task[1];
@@ -110,14 +156,14 @@ stdout = "hello\n"
     // Defaults [project]
     assert_eq!(
         b.project.makefile_rules,
-        vec!["all", "clean", "fclean", "re"]
+        ["all", "clean", "fclean", "re"]
             .iter()
             .map(|s| s.to_string())
             .collect::<Vec<_>>()
     );
     assert_eq!(
         b.project.cflags,
-        vec!["-Wall", "-Wextra", "-Werror"]
+        ["-Wall", "-Wextra", "-Werror"]
             .iter()
             .map(|s| s.to_string())
             .collect::<Vec<_>>()
@@ -242,6 +288,30 @@ harness = "harness/ex01_main.c"
 }
 
 #[test]
+fn champ_inconnu_dans_functional_test_erreur() {
+    let toml = r#"
+[project]
+name = "mysh"
+type = "binary"
+binary = "mysh"
+
+[[functional_test]]
+name = "hello"
+stdout = "hello\n"
+timout_ms = 9999
+"#;
+    let dir = TempDir::new().unwrap();
+    let path = write_battery(&dir, toml);
+
+    let err = Battery::load(&path).unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("timout_ms"),
+        "la coquille doit être signalée, message : {msg}"
+    );
+}
+
+#[test]
 fn discover_trouve_le_moulinette_toml_local() {
     let dir = TempDir::new().unwrap();
     write_battery(&dir, DAY03_TOML);
@@ -253,11 +323,99 @@ fn discover_trouve_le_moulinette_toml_local() {
 
 #[test]
 fn discover_erreur_si_aucune_batterie() {
+    let _lock = XDG_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
+    // Config vide (pas de .config/seeyou/batteries) : env hermétique,
+    // indépendante de la machine hôte.
+    let config = TempDir::new().unwrap();
+    let _xdg = XdgConfigGuard::set(&config.path().join(".config"));
     let dir = TempDir::new().unwrap(); // dossier vide, nom aléatoire
 
     let err = Battery::discover(dir.path()).unwrap_err();
     assert!(
         err.to_string().contains("aucune batterie trouvée"),
         "message inattendu : {err}"
+    );
+}
+
+/// Batterie binaire minimale valide, `project.name = "mysh"`.
+const MYSH_TOML: &str = r#"
+[project]
+name = "mysh"
+type = "binary"
+binary = "mysh"
+
+[[functional_test]]
+name = "hello"
+stdout = "hello\n"
+"#;
+
+/// Invalide : projet binary sans champ `binary`.
+const CASSEE_TOML: &str = r#"
+[project]
+name = "mysh"
+type = "binary"
+"#;
+
+#[test]
+fn discover_tier2_trouve_batterie_par_nom_de_dossier() {
+    let _lock = XDG_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
+    let config = TempDir::new().unwrap();
+    let _xdg = XdgConfigGuard::set(&config.path().join(".config"));
+    let batteries = setup_config_batteries(&config, &[("mysh.toml", MYSH_TOML)]);
+    let work = TempDir::new().unwrap();
+    let projet = work.path().join("mysh");
+    fs::create_dir(&projet).unwrap();
+
+    let b = Battery::discover(&projet).unwrap();
+
+    assert_eq!(b.project.name, "mysh");
+    assert_eq!(b.root, batteries);
+}
+
+#[test]
+fn discover_tier2_nom_non_matchant_erreur() {
+    let _lock = XDG_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
+    let config = TempDir::new().unwrap();
+    let _xdg = XdgConfigGuard::set(&config.path().join(".config"));
+    setup_config_batteries(&config, &[("mysh.toml", MYSH_TOML)]);
+    let work = TempDir::new().unwrap();
+    let projet = work.path().join("autre_projet");
+    fs::create_dir(&projet).unwrap();
+
+    let err = Battery::discover(&projet).unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("aucune batterie trouvée"),
+        "message inattendu : {msg}"
+    );
+    assert!(
+        !msg.contains("mysh.toml"),
+        "une batterie valide ne doit pas être listée comme invalide : {msg}"
+    );
+}
+
+#[test]
+fn discover_tier2_batterie_invalide_mentionnee() {
+    let _lock = XDG_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
+    let config = TempDir::new().unwrap();
+    let _xdg = XdgConfigGuard::set(&config.path().join(".config"));
+    setup_config_batteries(&config, &[("cassee.toml", CASSEE_TOML)]);
+    let work = TempDir::new().unwrap();
+    let projet = work.path().join("projet_inconnu");
+    fs::create_dir(&projet).unwrap();
+
+    let err = Battery::discover(&projet).unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("aucune batterie trouvée"),
+        "message inattendu : {msg}"
+    );
+    assert!(
+        msg.contains("cassee.toml"),
+        "le fichier cassé doit être mentionné : {msg}"
+    );
+    assert!(
+        msg.contains("binary"),
+        "l'erreur de la batterie doit être mentionnée : {msg}"
     );
 }

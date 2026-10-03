@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 /// Une batterie complète : métadonnées projet + exercices/tests,
 /// racinée dans `root` (dossier contenant le TOML).
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)] // ok avec `root` en skip : absent du TOML
 pub struct Battery {
     pub project: ProjectMeta,
     #[serde(default)]
@@ -60,6 +61,10 @@ impl Battery {
             .unwrap_or_default()
             .to_string();
 
+        // Batteries du tier 2 ignorées car invalides (chemin + erreur) —
+        // listées dans l'erreur finale si rien ne matche.
+        let mut invalides: Vec<(PathBuf, anyhow::Error)> = Vec::new();
+
         // 2. ~/.config/seeyou/batteries/*.toml
         if let Some(config) = dirs::config_dir() {
             let batteries_dir = config.join("seeyou").join("batteries");
@@ -71,10 +76,10 @@ impl Battery {
                     .collect();
                 paths.sort();
                 for path in paths {
-                    if let Ok(b) = Battery::load(&path) {
-                        if b.project.name == dir_name {
-                            return Ok(b);
-                        }
+                    match Battery::load(&path) {
+                        Ok(b) if b.project.name == dir_name => return Ok(b),
+                        Ok(_) => {}
+                        Err(err) => invalides.push((path, err)),
                     }
                 }
             }
@@ -86,10 +91,20 @@ impl Battery {
         //    sur `dir_name` ici.
         let _ = embedded_batteries();
 
+        let detail_invalides = if invalides.is_empty() {
+            String::new()
+        } else {
+            let mut s = String::from("\nbatteries ignorées car invalides :");
+            for (path, err) in &invalides {
+                s.push_str(&format!("\n  - {} : {err:#}", path.display()));
+            }
+            s
+        };
         bail!(
-            "aucune batterie trouvée pour « {} » ({})",
+            "aucune batterie trouvée pour « {} » ({}){}",
             dir_name,
-            dir.display()
+            dir.display(),
+            detail_invalides
         )
     }
 
