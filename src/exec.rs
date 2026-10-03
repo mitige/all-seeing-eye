@@ -58,9 +58,12 @@ pub struct Limits {
     /// `RLIMIT_FSIZE` — taille max des fichiers créés (défaut : 16 Mio).
     pub fsize_bytes: u64,
     /// `RLIMIT_NPROC` — nombre maximal de processus de l'uid réel
-    /// (défaut : 256) : borne l'explosion d'une fork bomb. La
-    /// comptabilisation est par uid réel sur tout le système, pas par
-    /// arbre de processus.
+    /// (défaut : 8192). La comptabilisation est par uid réel sur tout
+    /// le système, pas par arbre de processus : une machine de dev
+    /// normale compte déjà ~2000 tâches, donc un défaut bas (ex. 256)
+    /// ferait échouer tout fork du fils (EAGAIN). 8192 laisse passer
+    /// les projets légitimes tout en cappant une fork bomb ; sur une
+    /// machine de correction dédiée, baisser (ex. 256).
     pub nproc: u64,
 }
 
@@ -70,7 +73,7 @@ impl Default for Limits {
             mem_bytes: 512 * 1024 * 1024,
             cpu_secs: 10,
             fsize_bytes: 16 * 1024 * 1024,
-            nproc: 256,
+            nproc: 8192,
         }
     }
 }

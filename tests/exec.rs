@@ -7,13 +7,6 @@ use seeyou::exec::{run_capture, ExecOutcome, ExecStatus, Limits, MAX_CAPTURE_BYT
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-/// `RLIMIT_NPROC` relevé pour les tests dont le scénario exige que le
-/// fils forke : le comptage est par uid réel sur tout le système, et
-/// une machine de dev dépasse allègrement les 256 tâches du défaut —
-/// sans marge au-dessus de l'ambiant, le moindre fork du fils serait
-/// refusé (EAGAIN) et ces tests passeraient de façon vacu.
-const NPROC_TESTS: u64 = 8192;
-
 /// Lance `program args` avec `stdin`, dans un dossier qui existe
 /// (`temp_dir()`), et fait échouer le test si le lancement lui-même
 /// erre (les assertions portent sur l'`ExecOutcome`, pas sur le spawn).
@@ -113,16 +106,12 @@ fn stdin_ressort_identique_via_cat() {
 fn timeout_tue_aussi_les_descendants() {
     // Marqueur unique dans argv[0] : les pgrep ci-dessous ne peuvent
     // pas confondre nos cobayes avec un `sleep` quelconque de la
-    // machine. nproc relevé : le scénario exige un fork (voir
-    // NPROC_TESTS).
-    let limits = Limits {
-        nproc: NPROC_TESTS,
-        ..Limits::default()
-    };
+    // machine. Le scénario exige un fork : le défaut nproc (8192)
+    // laisse assez de marge au-dessus de l'ambiant système.
     // Témoin : les deux cobayes taggés doivent exister pendant le run
     // (état stable : sh a exec'd le second, le subshell le premier).
     let temoin = temoin_pendant("seeyou_test_tag", 2, Duration::from_millis(280));
-    let out = run_lim(
+    let out = run(
         "sh",
         &[
             "-c",
@@ -130,7 +119,6 @@ fn timeout_tue_aussi_les_descendants() {
         ],
         "",
         Duration::from_millis(300),
-        limits,
     );
     assert!(
         temoin.join().expect("le témoin ne doit pas paniquer"),
@@ -277,15 +265,12 @@ fn rlimit_cpu_tue_la_boucle_busy_en_1s() {
 /// 6 s pour un timeout de 300 ms.)
 #[test]
 fn descendant_setsid_garde_stdout_retour_borne() {
-    let limits = Limits {
-        nproc: NPROC_TESTS,
-        ..Limits::default()
-    };
     // Le descendant taggé fait setsid : il échappe au kill de groupe
-    // (échappatoire documentée) et garde les pipes ouverts.
+    // (échappatoire documentée) et garde les pipes ouverts. Fork requis
+    // : couvert par le défaut nproc (8192).
     let temoin = temoin_pendant("seeyou_setsid_tag", 1, Duration::from_millis(280));
     let t0 = Instant::now();
-    let out = run_lim(
+    let out = run(
         "sh",
         &[
             "-c",
@@ -293,7 +278,6 @@ fn descendant_setsid_garde_stdout_retour_borne() {
         ],
         "",
         Duration::from_millis(300),
-        limits,
     );
     let wall = t0.elapsed();
     assert!(
@@ -322,14 +306,11 @@ fn descendant_setsid_garde_stdout_retour_borne() {
 /// arrière-plan vers /dev/null.)
 #[test]
 fn descendant_setsid_garde_stdin_retour_borne() {
-    let limits = Limits {
-        nproc: NPROC_TESTS,
-        ..Limits::default()
-    };
+    // Fork requis : couvert par le défaut nproc (8192).
     let temoin = temoin_pendant("seeyou_stdin_tag", 1, Duration::from_millis(280));
     let input = "x".repeat(1024 * 1024); // > buffer du pipe : write bloque
     let t0 = Instant::now();
-    let out = run_lim(
+    let out = run(
         "sh",
         &[
             "-c",
@@ -337,7 +318,6 @@ fn descendant_setsid_garde_stdin_retour_borne() {
         ],
         &input,
         Duration::from_millis(300),
-        limits,
     );
     let wall = t0.elapsed();
     assert!(
