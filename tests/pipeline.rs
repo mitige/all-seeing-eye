@@ -71,11 +71,20 @@ fn pipeline_emet_7_step_started_dans_l_ordre_puis_run_finished() {
         ]
     );
 
-    // Les 7 étapes se terminent ok (stubs) : 7 StepStarted + 7
-    // StepFinished + 1 RunFinished = 15 événements, rien d'autre.
+    // Les 7 étapes se terminent ok, non skipped (stubs) : 7 StepStarted
+    // + 7 StepFinished + 1 RunFinished = 15 événements, rien d'autre.
     let finished_ok = events
         .iter()
-        .filter(|e| matches!(e, Event::StepFinished { ok: true, .. }))
+        .filter(|e| {
+            matches!(
+                e,
+                Event::StepFinished {
+                    ok: true,
+                    skipped: false,
+                    ..
+                }
+            )
+        })
         .count();
     assert_eq!(finished_ok, 7);
     assert_eq!(events.len(), 15, "événements inattendus : {events:?}");
@@ -93,6 +102,7 @@ fn pipeline_emet_7_step_started_dans_l_ordre_puis_run_finished() {
     assert_eq!(report.project, "mini_functions");
     assert_eq!(report.steps.len(), 7);
     assert!(report.steps.iter().all(|s| s.ok));
+    assert!(report.steps.iter().all(|s| !s.skipped));
     assert_eq!(
         report
             .steps

@@ -21,6 +21,10 @@ pub struct TestRecord {
 pub struct StepReport {
     pub step: String,
     pub ok: bool,
+    /// Étape sautée (dépendance échouée). `serde(default)` pour rester
+    /// compatible avec les rapports écrits avant ce champ.
+    #[serde(default)]
+    pub skipped: bool,
     pub summary: String,
     /// (nom du check, ok, détail)
     pub checks: Vec<(String, bool, String)>,

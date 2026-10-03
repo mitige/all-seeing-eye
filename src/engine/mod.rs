@@ -22,7 +22,7 @@ mod verdict;
 use crate::battery::Battery;
 use crate::norme::NormeFault;
 use crate::report::{Report, StepReport, TestRecord};
-use events::{Event, Step};
+pub use events::{Event, Step, TestVerdict};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -105,11 +105,18 @@ fn run_step(
 ) {
     if let Some(reason) = skip_reason(step, &ctx.step_ok) {
         step_started(tx, step);
-        step_finished(ctx, tx, step, false, format!("skipped: {reason}"));
+        step_skipped(ctx, tx, step, format!("skipped: {reason}"));
         ctx.step_ok.insert(step, false);
         return;
     }
     let ok = f(ctx, tx);
+    // Invariant : toute étape exécutée appelle step_finished exactement une
+    // fois. Un oubli devient un échec visible en debug au lieu d'un rapport
+    // silencieusement incomplet.
+    debug_assert!(
+        ctx.steps.last().is_some_and(|s| s.step == step.name()),
+        "étape {step:?} terminée sans step_finished : StepReport manquant"
+    );
     ctx.step_ok.insert(step, ok);
 }
 
@@ -139,7 +146,7 @@ fn step_started(tx: &mpsc::Sender<Event>, step: Step) {
     );
 }
 
-/// Fin d'étape : émet `StepFinished` et enregistre le `StepReport`.
+/// Fin d'étape normale : émet `StepFinished` et enregistre le `StepReport`.
 fn step_finished(
     ctx: &mut PipelineContext,
     tx: &mpsc::Sender<Event>,
@@ -147,17 +154,38 @@ fn step_finished(
     ok: bool,
     summary: String,
 ) {
+    step_finished_impl(ctx, tx, step, ok, false, summary);
+}
+
+/// Étape sautée (dépendance échouée) : `StepFinished` avec `skipped: true`
+/// et `ok: false` — un skip n'est jamais un succès. `summary` porte la
+/// raison humaine ("skipped: …").
+fn step_skipped(ctx: &mut PipelineContext, tx: &mpsc::Sender<Event>, step: Step, summary: String) {
+    step_finished_impl(ctx, tx, step, false, true, summary);
+}
+
+/// Implémentation commune : émet `StepFinished` et enregistre le `StepReport`.
+fn step_finished_impl(
+    ctx: &mut PipelineContext,
+    tx: &mpsc::Sender<Event>,
+    step: Step,
+    ok: bool,
+    skipped: bool,
+    summary: String,
+) {
     send(
         tx,
         Event::StepFinished {
             step,
             ok,
+            skipped,
             summary: summary.clone(),
         },
     );
     ctx.steps.push(StepReport {
         step: step.name().to_string(),
         ok,
+        skipped,
         summary,
         checks: Vec::new(), // les checks détaillés arrivent avec les vraies étapes
     });

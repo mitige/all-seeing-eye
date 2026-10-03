@@ -1,6 +1,6 @@
 //! Modèle des fautes de norme Epitech.
 //!
-//! Le détecteur arrive en Task 5 ; ici, uniquement les types partagés
+//! Le détecteur arrive en Task 6 ; ici, uniquement les types partagés
 //! (rapport, événements, contexte du pipeline).
 
 use serde::{Deserialize, Serialize};

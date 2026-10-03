@@ -87,6 +87,9 @@ pub enum Event {
     StepFinished {
         step: Step,
         ok: bool,
+        /// Étape sautée (dépendance échouée) ; `summary` garde la raison
+        /// humaine (ex. "skipped: build failed").
+        skipped: bool,
         summary: String,
     },
     RunFinished {

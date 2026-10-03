@@ -2,6 +2,11 @@
 //!
 //! Le scoring détaillé arrive en Task 10 ; ici, le verdict réussit
 //! toujours et le rapport est une simple collecte du ctx.
+//!
+//! Règle de scoring pour Task 10 : un groupe de tests vide (étape
+//! skipped) compte 0 % dans le score global — jamais 100 % vacuoleux
+//! ni NaN (division 0/0). Comportement vraie moulinette : build KO =
+//! tests à zéro.
 
 use super::events::{Event, Step, TestVerdict};
 use super::PipelineContext;
@@ -35,7 +40,7 @@ pub fn run(ctx: &mut PipelineContext, tx: &mpsc::Sender<Event>) {
 /// ("passed"|"failed"|"crashed"|"timeout"), diff extrait pour Failed.
 ///
 /// Sera appelé par les étapes unit/functional pour alimenter
-/// `ctx.tests` (câblage en Tasks 6-7).
+/// `ctx.tests` (câblage en Tasks 8-9).
 #[allow(dead_code)] // pas encore de producteur de TestVerdict
 pub(crate) fn test_record(group: &str, name: &str, verdict: &TestVerdict) -> TestRecord {
     let (label, diff) = match verdict {
