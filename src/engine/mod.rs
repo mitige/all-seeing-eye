@@ -14,7 +14,9 @@ pub mod events;
 mod build;
 mod functional;
 mod norme;
-mod prelim;
+/// Publique pour permettre aux tests d'intégration de piloter l'étape
+/// isolément (PipelineContext construit à la main).
+pub mod prelim;
 mod symbols;
 mod unit;
 mod verdict;

@@ -41,7 +41,14 @@ fn test_opts() -> RunOpts {
 #[test]
 fn pipeline_emet_7_step_started_dans_l_ordre_puis_run_finished() {
     let (_bat_dir, battery) = mini_battery();
-    let target = TempDir::new().unwrap(); // dossier projet vide
+    let target = TempDir::new().unwrap();
+    // L'étape Prelim (Task 4) exige la présence des deliveries :
+    // sans ce fichier, elle échouerait légitimement.
+    fs::write(
+        target.path().join("my_putchar.c"),
+        "void my_putchar(char c);\n",
+    )
+    .unwrap();
 
     let (tx, rx) = mpsc::channel();
     // run_pipeline est synchrone : appel direct, tx passé par valeur —
@@ -71,8 +78,10 @@ fn pipeline_emet_7_step_started_dans_l_ordre_puis_run_finished() {
         ]
     );
 
-    // Les 7 étapes se terminent ok, non skipped (stubs) : 7 StepStarted
-    // + 7 StepFinished + 1 RunFinished = 15 événements, rien d'autre.
+    // Les 7 étapes se terminent ok, non skipped : 7 StepStarted
+    // + 7 StepFinished + 1 RunFinished, plus les CheckFinished de
+    // l'étape Prelim (Task 4) — leur nombre exact dépend de la
+    // présence de banana-check-repo sur la machine.
     let finished_ok = events
         .iter()
         .filter(|e| {
@@ -87,7 +96,17 @@ fn pipeline_emet_7_step_started_dans_l_ordre_puis_run_finished() {
         })
         .count();
     assert_eq!(finished_ok, 7);
-    assert_eq!(events.len(), 15, "événements inattendus : {events:?}");
+    assert!(events.len() >= 15, "événements manquants : {events:?}");
+    for e in &events {
+        match e {
+            Event::StepStarted { .. } | Event::StepFinished { .. } | Event::RunFinished { .. } => {}
+            Event::CheckFinished { step, ok, .. } => {
+                assert_eq!(*step, Step::Prelim, "check hors Prelim : {e:?}");
+                assert!(*ok, "check Prelim en échec : {e:?}");
+            }
+            other => panic!("événement inattendu : {other:?}"),
+        }
+    }
 
     // Dernier événement : RunFinished, avec un rapport complet.
     match events.last() {
