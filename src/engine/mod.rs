@@ -1,0 +1,209 @@
+//! Orchestrateur du pipeline de notation.
+//!
+//! Exécute les 7 étapes DANS L'ORDRE (spec §5) : Prelim, Build, Norme,
+//! Symbols, Unit, Functional, Verdict. Un échec d'étape bloquante
+//! (Prelim, Build) n'empêche PAS les étapes indépendantes (Norme,
+//! Symbols) de tourner ; les étapes dépendantes du build (Unit,
+//! Functional) sont marquées skipped si le build a échoué.
+//!
+//! Aucune dépendance TUI ici : la progression part dans un channel
+//! d'[`Event`] consommé par le front.
+
+pub mod events;
+
+mod build;
+mod functional;
+mod norme;
+mod prelim;
+mod symbols;
+mod unit;
+mod verdict;
+
+use crate::battery::Battery;
+use crate::norme::NormeFault;
+use crate::report::{Report, StepReport, TestRecord};
+use events::{Event, Step};
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use std::sync::mpsc;
+use std::time::Instant;
+
+/// Options d'un run, fournies par l'appelant (CLI/TUI).
+#[derive(Debug, Clone)]
+pub struct RunOpts {
+    pub strict_norme: bool,
+    pub use_epiclang: bool,
+    pub compiler: PathBuf,
+}
+
+/// Artefacts produits par l'étape de compilation.
+#[derive(Debug)]
+pub struct BuildArtifacts {
+    pub dir: tempfile::TempDir,
+    pub binary: Option<PathBuf>,
+}
+
+/// Contexte partagé, mutable, passé à chaque étape.
+///
+/// `steps` et `report` complètent le plan initial : les résumés d'étapes
+/// sont collectés au fil de l'eau (sinon le [`Report`] final ne pourrait
+/// pas être construit depuis le ctx), et le rapport est posé par
+/// l'étape verdict puis retourné par [`run_pipeline`].
+#[derive(Debug)]
+pub struct PipelineContext {
+    pub battery: Battery,
+    pub target: PathBuf,
+    pub opts: RunOpts,
+    pub build: Option<BuildArtifacts>,
+    pub norme_faults: Vec<NormeFault>,
+    pub tests: Vec<TestRecord>,
+    pub step_ok: BTreeMap<Step, bool>,
+    pub started: Instant,
+    /// StepReports dans l'ordre d'exécution (alimenté par `step_finished`).
+    pub steps: Vec<StepReport>,
+    /// Posé par l'étape verdict, consommé par `run_pipeline`.
+    pub report: Option<Report>,
+}
+
+/// Exécute les 7 étapes dans l'ordre et renvoie le rapport final.
+pub fn run_pipeline(
+    battery: &Battery,
+    target: &Path,
+    tx: mpsc::Sender<Event>,
+    opts: &RunOpts,
+) -> Report {
+    let mut ctx = PipelineContext {
+        battery: battery.clone(),
+        target: target.to_path_buf(),
+        opts: opts.clone(),
+        build: None,
+        norme_faults: Vec::new(),
+        tests: Vec::new(),
+        step_ok: BTreeMap::new(),
+        started: Instant::now(),
+        steps: Vec::new(),
+        report: None,
+    };
+
+    run_step(Step::Prelim, &mut ctx, &tx, prelim::run);
+    run_step(Step::Build, &mut ctx, &tx, build::run);
+    run_step(Step::Norme, &mut ctx, &tx, norme::run);
+    run_step(Step::Symbols, &mut ctx, &tx, symbols::run);
+    run_step(Step::Unit, &mut ctx, &tx, unit::run);
+    run_step(Step::Functional, &mut ctx, &tx, functional::run);
+    verdict::run(&mut ctx, &tx);
+
+    ctx.report.expect("le verdict pose toujours le rapport")
+}
+
+/// Lance une étape, ou la marque skipped si une dépendance a échoué.
+fn run_step(
+    step: Step,
+    ctx: &mut PipelineContext,
+    tx: &mpsc::Sender<Event>,
+    f: fn(&mut PipelineContext, &mpsc::Sender<Event>) -> bool,
+) {
+    if let Some(reason) = skip_reason(step, &ctx.step_ok) {
+        step_started(tx, step);
+        step_finished(ctx, tx, step, false, format!("skipped: {reason}"));
+        ctx.step_ok.insert(step, false);
+        return;
+    }
+    let ok = f(ctx, tx);
+    ctx.step_ok.insert(step, ok);
+}
+
+/// Raison de skip d'une étape dépendante, le cas échéant (spec §5) :
+/// Unit et Functional dépendent du build ; les autres sont indépendantes.
+fn skip_reason(step: Step, step_ok: &BTreeMap<Step, bool>) -> Option<&'static str> {
+    let build_ok = step_ok.get(&Step::Build).copied().unwrap_or(false);
+    match step {
+        Step::Unit | Step::Functional if !build_ok => Some("build failed"),
+        _ => None,
+    }
+}
+
+/// Envoie un event ; un receiver parti (front fermé) n'arrête pas le run.
+fn send(tx: &mpsc::Sender<Event>, event: Event) {
+    let _ = tx.send(event);
+}
+
+/// Début d'étape : émet `StepStarted`.
+fn step_started(tx: &mpsc::Sender<Event>, step: Step) {
+    send(
+        tx,
+        Event::StepStarted {
+            step,
+            label: step.label().to_string(),
+        },
+    );
+}
+
+/// Fin d'étape : émet `StepFinished` et enregistre le `StepReport`.
+fn step_finished(
+    ctx: &mut PipelineContext,
+    tx: &mpsc::Sender<Event>,
+    step: Step,
+    ok: bool,
+    summary: String,
+) {
+    send(
+        tx,
+        Event::StepFinished {
+            step,
+            ok,
+            summary: summary.clone(),
+        },
+    );
+    ctx.steps.push(StepReport {
+        step: step.name().to_string(),
+        ok,
+        summary,
+        checks: Vec::new(), // les checks détaillés arrivent avec les vraies étapes
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// step_ok avec Prelim ok et Build au statut demandé.
+    fn step_ok_with_build(build_ok: bool) -> BTreeMap<Step, bool> {
+        let mut m = BTreeMap::new();
+        m.insert(Step::Prelim, true);
+        m.insert(Step::Build, build_ok);
+        m
+    }
+
+    #[test]
+    fn unit_et_functional_skips_si_build_ko() {
+        let m = step_ok_with_build(false);
+        assert_eq!(skip_reason(Step::Unit, &m), Some("build failed"));
+        assert_eq!(skip_reason(Step::Functional, &m), Some("build failed"));
+    }
+
+    #[test]
+    fn norme_et_symbols_tournent_meme_si_build_ko() {
+        let m = step_ok_with_build(false);
+        assert_eq!(skip_reason(Step::Norme, &m), None);
+        assert_eq!(skip_reason(Step::Symbols, &m), None);
+        assert_eq!(skip_reason(Step::Prelim, &m), None);
+        assert_eq!(skip_reason(Step::Verdict, &m), None);
+    }
+
+    #[test]
+    fn aucun_skip_si_build_ok() {
+        let m = step_ok_with_build(true);
+        for s in [
+            Step::Prelim,
+            Step::Build,
+            Step::Norme,
+            Step::Symbols,
+            Step::Unit,
+            Step::Functional,
+            Step::Verdict,
+        ] {
+            assert_eq!(skip_reason(s, &m), None, "skip inattendu pour {s:?}");
+        }
+    }
+}
