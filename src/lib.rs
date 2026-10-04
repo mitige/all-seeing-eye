@@ -5,3 +5,4 @@ pub mod engine;
 pub mod exec;
 pub mod norme;
 pub mod report;
+pub mod tui;
