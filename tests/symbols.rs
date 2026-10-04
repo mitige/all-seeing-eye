@@ -191,6 +191,31 @@ const USE_IT_C: &str = "int helper(void);\n\nint use_it(void)\n{\n    return hel
 const HELLO_C: &str =
     "#include <stdio.h>\n\nint main(void)\n{\n    printf(\"hello world\\n\");\n    return 0;\n}\n";
 
+/// fprintf sur stderr ET stdout : dans un .o, les streams libc sont
+/// des indéfinis NOTYPE — des VARIABLES globales, pas des fonctions.
+const FPRINTF_STREAMS_C: &str = r#"
+#include <stdio.h>
+
+void ex01(void)
+{
+    fprintf(stderr, "e");
+    fprintf(stdout, "o");
+}
+"#;
+
+/// Adresse d'une fonction weak : gcc charge l'adresse via la GOT,
+/// d'où un indéfini `_GLOBAL_OFFSET_TABLE_` — bookkeeping compilateur,
+/// pas une fonction appelable (émis même sans -fPIC sur x86-64).
+const WEAK_GOT_C: &str = r#"
+__attribute__((weak)) extern void weak_fn(void);
+
+void ex01(void)
+{
+    if (__builtin_expect(weak_fn != 0, 1))
+        weak_fn();
+}
+"#;
+
 #[test]
 fn whitelist_vide_desactive_l_etape() {
     // Pas besoin de cc : l'étape est désactivée avant tout artefact.
@@ -230,8 +255,8 @@ fn sans_artefacts_ok_rien_a_scanner() {
     assert!(ok, "rien à scanner : succès à vide, pas un échec");
     let (ok_ev, skipped, summary) = step_finished(&events);
     assert!(
-        ok_ev && !skipped && summary.contains("no build artifacts"),
-        "attendu ok:true skipped:false « no build artifacts » : {summary:?}"
+        ok_ev && !skipped && summary.contains("aucun artefact"),
+        "attendu ok:true skipped:false « aucun artefact » : {summary:?}"
     );
 
     // (b) Binary sans binaire (build KO en amont).
@@ -241,7 +266,7 @@ fn sans_artefacts_ok_rien_a_scanner() {
     assert!(ok);
     let (ok_ev, skipped, summary) = step_finished(&events);
     assert!(
-        ok_ev && !skipped && summary.contains("no build artifacts"),
+        ok_ev && !skipped && summary.contains("aucun artefact"),
         "Binary sans binaire : {summary:?}"
     );
 
@@ -251,7 +276,7 @@ fn sans_artefacts_ok_rien_a_scanner() {
     assert!(ok);
     let (ok_ev, skipped, summary) = step_finished(&events);
     assert!(
-        ok_ev && !skipped && summary.contains("no build artifacts"),
+        ok_ev && !skipped && summary.contains("aucun artefact"),
         "Functions sans .o : {summary:?}"
     );
 }
@@ -351,6 +376,66 @@ fn meme_symbole_interdit_deux_objets_dedupe() {
         "printf vu dans deux .o = un seul KO dédupliqué : {checks:?}"
     );
     assert_eq!(ko[0].2, "forbidden function: printf");
+}
+
+#[test]
+fn objet_data_symbols_licites_ok() {
+    if !cc_present() {
+        eprintln!("cc absent du PATH : test skippé");
+        return;
+    }
+    // fprintf whitelisté ; stderr/stdout référencés comme données.
+    let (_bat_dir, battery) = load_battery(&functions_toml(&["ex01"], "\"fprintf\""));
+    let white = TempDir::new().unwrap();
+    compile_obj(white.path(), "ex01", FPRINTF_STREAMS_C);
+
+    let (ok, events, _ctx) = run_symbols(&battery, Some((white, None)));
+    assert!(
+        ok,
+        "les globals libc licites ne sont pas des fonctions interdites : {events:?}"
+    );
+    let checks = extract_checks(&events);
+    assert!(
+        checks.iter().all(|(_, ok, _)| *ok),
+        "KO inattendu (stream flaggé ?) : {checks:?}"
+    );
+    // Garde-fou explicite : jamais de KO sur un symbole data.
+    for sym in ["stderr", "stdout", "stdin", "environ"] {
+        assert!(
+            !checks.iter().any(|(_, _, d)| d.contains(sym)),
+            "symbole data {sym} flaggé : {checks:?}"
+        );
+    }
+}
+
+#[test]
+fn objet_reference_got_jamais_flaggee() {
+    if !cc_present() {
+        eprintln!("cc absent du PATH : test skippé");
+        return;
+    }
+    // weak_fn est whitelistée (référence faible licite) : seul
+    // `_GLOBAL_OFFSET_TABLE_` pourrait encore faire KO.
+    let (_bat_dir, battery) = load_battery(&functions_toml(&["ex01"], "\"weak_fn\""));
+    let white = TempDir::new().unwrap();
+    compile_obj(white.path(), "ex01", WEAK_GOT_C);
+
+    let (ok, events, _ctx) = run_symbols(&battery, Some((white, None)));
+    assert!(
+        ok,
+        "une référence GOT n'est pas une fonction interdite : {events:?}"
+    );
+    let checks = extract_checks(&events);
+    assert!(
+        checks.iter().all(|(_, ok, _)| *ok),
+        "KO inattendu (GOT flaggée ?) : {checks:?}"
+    );
+    assert!(
+        !checks
+            .iter()
+            .any(|(_, _, d)| d.contains("_GLOBAL_OFFSET_TABLE_")),
+        "_GLOBAL_OFFSET_TABLE_ flaggé : {checks:?}"
+    );
 }
 
 #[test]

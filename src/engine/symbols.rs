@@ -12,12 +12,30 @@
 //!   appelle une autre est un appel interne, pas une dépendance
 //!   externe) ;
 //! - ni un symbole du runtime C ([`RUNTIME_SYMBOLS`] : `_start`,
-//!   `__libc_start_main`… — toujours présents dans un binaire lié) ;
+//!   `__libc_start_main`, `_GLOBAL_OFFSET_TABLE_`… — bookkeeping
+//!   compilateur/éditeur de liens, jamais une fonction appelable) ;
+//! - ni une donnée globale libc ([`DATA_SYMBOLS`] : `stdin`, `stdout`,
+//!   `stderr`, `environ`… — dans un `.o`, une donnée externe est un
+//!   indéfini NOTYPE, indistinguable d'une fonction par son kind) ;
 //! - ni dans `allowed_functions`.
 //!
 //! Retraitement des noms : le suffixe de version ELF
 //! (`printf@@GLIBC_2.2.5`, `printf@GLIBC_2.2.5`) est tronqué avant
 //! comparaison ([`strip_version`]).
+//!
+//! ## Guide des whitelists
+//!
+//! Le sujet whiteliste des fonctions vues du C ; la libc et le
+//! compilateur substituent parfois l'implémentation réellement
+//! référencée. À prévoir dans `allowed_functions` selon le sujet :
+//! - `errno` → `__errno_location` : `errno` est une macro qui expande
+//!   en `(*__errno_location())` — autoriser `errno` implique de
+//!   whitelister `__errno_location`, sinon KO « forbidden function » ;
+//! - variantes fortifiées (`-D_FORTIFY_SOURCE`, activé par défaut sur
+//!   plusieurs distributions) : `printf` → `__printf_chk`,
+//!   `fprintf` → `__fprintf_chk`, `memcpy` → `__memcpy_chk`… — la
+//!   whitelist doit couvrir la variante `_chk`, ou le build doit
+//!   tourner sans fortify.
 //!
 //! Cas particuliers :
 //! - `allowed_functions` vide → l'étape est désactivée :
@@ -27,7 +45,7 @@
 //! - build absent ou KO (rien à scanner) → l'étape tourne quand même
 //!   (spec §5 : Symbols ne dépend pas du build dans `skip_reason`)
 //!   mais réussit à vide : `StepFinished ok:true, skipped:false`,
-//!   summary « no build artifacts to scan ». PAS un KO : la pénalité
+//!   summary « aucun artefact à scanner ». PAS un KO : la pénalité
 //!   du build KO est déjà portée par l'étape Build ;
 //! - artefact illisible ou corrompu → check KO explicite, étape KO —
 //!   jamais de panic sur input hostile. Un `.o` manquant (delivery
@@ -50,6 +68,7 @@ use std::sync::mpsc;
 /// TRIÉ (recherche dichotomique) — à garder trié, le test unitaire
 /// `runtime_symbols_reste_trie` veille.
 const RUNTIME_SYMBOLS: &[&str] = &[
+    "_GLOBAL_OFFSET_TABLE_", // base GOT : bookkeeping (-fPIC, symboles weak)
     "_ITM_deregisterTMCloneTable", // dé/enregistrement des clones transactionnels
     "_ITM_registerTMCloneTable",
     "__bss_start",  // bornes de section, posées par le crt
@@ -69,6 +88,27 @@ const RUNTIME_SYMBOLS: &[&str] = &[
     "deregister_tm_clones",
     "main", // le rendu Binary le définit ; jamais une dépendance externe
     "register_tm_clones",
+];
+
+/// Données globales libc licites. Dans un `.o`, une donnée externe
+/// (`stderr`, `environ`…) est un indéfini NOTYPE, indistinguable d'une
+/// fonction par son kind : sans cette liste, `fprintf(stderr, "e")`
+/// avec `fprintf` whitelisté serait KO « forbidden function: stderr ».
+/// Les sujets Epitech whitelistent des fonctions, pas des variables —
+/// ces globals sont licites dès qu'une fonction whitelistée les
+/// utilise.
+///
+/// TRIÉ (recherche dichotomique) — à garder trié, le test unitaire
+/// `data_symbols_reste_trie` veille.
+const DATA_SYMBOLS: &[&str] = &[
+    "environ", // variables d'environnement (unistd.h)
+    "optarg",  // getopt : argument de l'option courante
+    "opterr",  // getopt : émission des messages d'erreur
+    "optind",  // getopt : index du prochain argument
+    "optopt",  // getopt : option inconnue ou argument manquant
+    "stderr",  // flux d'erreur standard (stdio.h)
+    "stdin",   // flux d'entrée standard
+    "stdout",  // flux de sortie standard
 ];
 
 /// Étape 4 du pipeline : fonctions interdites. Renvoie `true` ssi
@@ -97,7 +137,7 @@ pub fn run(ctx: &mut PipelineContext, tx: &mpsc::Sender<Event>) -> bool {
             tx,
             Step::Symbols,
             true,
-            "no build artifacts to scan".to_string(),
+            "aucun artefact à scanner".to_string(),
             Vec::new(),
         );
         return true;
@@ -115,8 +155,8 @@ pub fn run(ctx: &mut PipelineContext, tx: &mpsc::Sender<Event>) -> bool {
         }
     }
     // Second passage : un indéfini est interdit s'il n'est ni défini
-    // par le rendu, ni runtime, ni whitelisté. BTreeSet : dédupliqué
-    // et ordre déterministe.
+    // par le rendu, ni runtime, ni donnée libc licite, ni whitelisté.
+    // BTreeSet : dédupliqué et ordre déterministe.
     let allowed: BTreeSet<&str> = ctx
         .battery
         .project
@@ -128,6 +168,7 @@ pub fn run(ctx: &mut PipelineContext, tx: &mpsc::Sender<Event>) -> bool {
     for name in &table.undefined {
         if table.defined.contains(name)
             || RUNTIME_SYMBOLS.binary_search(&name.as_str()).is_ok()
+            || DATA_SYMBOLS.binary_search(&name.as_str()).is_ok()
             || allowed.contains(name.as_str())
         {
             continue;
@@ -247,6 +288,14 @@ mod tests {
         assert!(
             RUNTIME_SYMBOLS.windows(2).all(|w| w[0] < w[1]),
             "RUNTIME_SYMBOLS doit rester trié (recherche dichotomique)"
+        );
+    }
+
+    #[test]
+    fn data_symbols_reste_trie() {
+        assert!(
+            DATA_SYMBOLS.windows(2).all(|w| w[0] < w[1]),
+            "DATA_SYMBOLS doit rester trié (recherche dichotomique)"
         );
     }
 }
