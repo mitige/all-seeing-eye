@@ -78,10 +78,13 @@ fn pipeline_emet_7_step_started_dans_l_ordre_puis_run_finished() {
         ]
     );
 
-    // Les 7 étapes se terminent ok, non skipped : 7 StepStarted
-    // + 7 StepFinished + 1 RunFinished, plus les CheckFinished des
-    // étapes Prelim (Task 4) et Build (Task 5) — leur nombre exact
-    // dépend de la présence de banana-check-repo sur la machine.
+    // Les 7 étapes se terminent ok : 6 tournent réellement
+    // (ok:true, skipped:false) ; Symbols est désactivée (Task 7) — la
+    // batterie minimale n'a pas de allowed_functions — donc ok:true,
+    // skipped:true. 7 StepStarted + 7 StepFinished + 1 RunFinished,
+    // plus les CheckFinished des étapes Prelim (Task 4) et Build
+    // (Task 5) — leur nombre exact dépend de la présence de
+    // banana-check-repo sur la machine.
     let finished_ok = events
         .iter()
         .filter(|e| {
@@ -95,7 +98,23 @@ fn pipeline_emet_7_step_started_dans_l_ordre_puis_run_finished() {
             )
         })
         .count();
-    assert_eq!(finished_ok, 7);
+    assert_eq!(finished_ok, 6);
+    let symbols_finished = events
+        .iter()
+        .find_map(|e| match e {
+            Event::StepFinished {
+                step: Step::Symbols,
+                ok,
+                skipped,
+                summary,
+            } => Some((*ok, *skipped, summary.clone())),
+            _ => None,
+        })
+        .expect("StepFinished Symbols émis");
+    assert!(
+        symbols_finished.0 && symbols_finished.1 && symbols_finished.2.contains("skipped"),
+        "Symbols attendue désactivée (ok:true, skipped:true) : {symbols_finished:?}"
+    );
     assert!(events.len() >= 15, "événements manquants : {events:?}");
     // L'étape Prelim a réellement émis des checks — sinon le filtre
     // ci-dessous (tout CheckFinished doit être Prelim et OK) ne
@@ -168,7 +187,15 @@ fn pipeline_emet_7_step_started_dans_l_ordre_puis_run_finished() {
     assert_eq!(report.project, "mini_functions");
     assert_eq!(report.steps.len(), 7);
     assert!(report.steps.iter().all(|s| s.ok));
-    assert!(report.steps.iter().all(|s| !s.skipped));
+    // Seule Symbols est marquée skipped (désactivée, whitelist vide) —
+    // avec ok:true, cf. ci-dessus.
+    let skipped: Vec<&str> = report
+        .steps
+        .iter()
+        .filter(|s| s.skipped)
+        .map(|s| s.step.as_str())
+        .collect();
+    assert_eq!(skipped, vec!["symbols"]);
     assert_eq!(
         report
             .steps

@@ -322,7 +322,8 @@ fn select_compiler(opts: &RunOpts) -> PathBuf {
 
 /// Stem d'une delivery : nom de fichier sans extension (« a/foo.c » →
 /// « foo ») — le nom du `.o` produit à la racine de la salle blanche.
-fn stem_of(delivery: &str) -> &str {
+/// Partagé avec symbols.rs (Task 7) : c'est lui qui consomme les `.o`.
+pub(crate) fn stem_of(delivery: &str) -> &str {
     Path::new(delivery)
         .file_stem()
         .and_then(|s| s.to_str())

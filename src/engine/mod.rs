@@ -21,7 +21,9 @@ pub mod norme;
 /// Publique pour permettre aux tests d'intégration de piloter l'étape
 /// isolément (PipelineContext construit à la main).
 pub mod prelim;
-mod symbols;
+/// Publique pour permettre aux tests d'intégration de piloter l'étape
+/// isolément (PipelineContext construit à la main).
+pub mod symbols;
 mod unit;
 mod verdict;
 
@@ -248,6 +250,15 @@ fn step_finished(
 /// raison humaine ("skipped: …").
 fn step_skipped(ctx: &mut PipelineContext, tx: &mpsc::Sender<Event>, step: Step, summary: String) {
     step_finished_impl(ctx, tx, step, false, true, summary, Vec::new());
+}
+
+/// Étape désactivée par la configuration de la batterie (ex. Symbols
+/// sans `allowed_functions`) : `StepFinished` avec `skipped: true`
+/// ET `ok: true` — le check n'a pas vocation à tourner ; ce n'est ni
+/// un échec ni le skip d'une dépendance échouée ([`step_skipped`],
+/// où ok reste false).
+fn step_disabled(ctx: &mut PipelineContext, tx: &mpsc::Sender<Event>, step: Step, summary: String) {
+    step_finished_impl(ctx, tx, step, true, true, summary, Vec::new());
 }
 
 /// Implémentation commune : émet `StepFinished` et enregistre le `StepReport`.
