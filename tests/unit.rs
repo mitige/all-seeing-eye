@@ -19,6 +19,7 @@ mod common;
 use seeyou::battery::Battery;
 use seeyou::engine::events::{Event, Step, TestVerdict};
 use seeyou::engine::{unit, BuildArtifacts, PipelineContext};
+use seeyou::report::compute_scores;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -451,7 +452,9 @@ fn synthese_seule_non_verbose_etape_ok() {
     // Reproduction live : le vrai criterion SANS --verbose n'émet QUE
     // la ligne Synthesis pour une suite 100 % verte (aucun [PASS]) —
     // et tout sur stderr. Le résumé atteste 3 tests : pas un KO
-    // « sans test détecté ».
+    // « sans test détecté », et des records SYNTHÉTIQUES
+    // matérialisent la Synthesis pour le rapport et les scores (sinon
+    // le groupe « unit » serait vide → 0 % mensonger).
     let (_bat_dir, battery) = load_battery(&battery_toml(true));
     let white = stage_fixture();
     write_script(
@@ -462,14 +465,44 @@ exit 0
 ",
     );
 
-    let (ok, events, _ctx) = run_unit(&battery, white);
+    let (ok, events, ctx) = run_unit(&battery, white);
     assert!(
         ok,
         "suite 100 % verte non-verbose : l'étape passe : {events:?}"
     );
-    assert!(
-        finished_tests(&events).is_empty(),
-        "aucun test individuel en non-verbose : {events:?}"
+    // 3 records synthétiques Passed, nommés criterion #1..#3 (noms
+    // documentés comme synthétiques), chacun avec ses events
+    // TestStarted/TestFinished (le TUI les voit).
+    let tests = finished_tests(&events);
+    assert_eq!(
+        tests.len(),
+        3,
+        "3 tests synthétiques depuis la Synthesis : {tests:?}"
+    );
+    for (i, (name, verdict)) in tests.iter().enumerate() {
+        assert_eq!(name, &format!("criterion #{}", i + 1));
+        assert!(
+            matches!(verdict, TestVerdict::Passed),
+            "{name} attendu Passed : {tests:?}"
+        );
+    }
+    let attendu: Vec<(bool, String)> = (1..=3)
+        .flat_map(|i| {
+            [
+                (true, format!("criterion #{i}")),
+                (false, format!("criterion #{i}")),
+            ]
+        })
+        .collect();
+    assert_eq!(test_event_sequence(&events), attendu);
+    assert_eq!(ctx.tests.len(), 3, "TestRecords : {:?}", ctx.tests);
+    // Le score du groupe « unit » reflète la vérité : 100 %.
+    let scores = compute_scores(&ctx.tests, &["unit"], &[]);
+    assert_eq!(
+        scores.par_groupe,
+        vec![("unit".to_string(), 100.0)],
+        "le groupe unit ne doit plus être vide : {:?}",
+        scores.par_groupe
     );
     // Le verdict est conduit par le résumé : check récapitulatif OK.
     let checks = extract_checks(&events);
@@ -486,22 +519,47 @@ exit 0
 #[test]
 fn synthese_seule_avec_echec_etape_ko() {
     // Contrepartie : Synthesis Failing: 1 + exit 1, toujours sans
-    // tests individuels → KO conduit par le résumé (et par l'exit).
+    // tests individuels → KO conduit par le résumé (et par l'exit), et
+    // records synthétiques : 1 Failed + (Tested-1) Passed → 75 %.
     let (_bat_dir, battery) = load_battery(&battery_toml(true));
     let white = stage_fixture();
     write_script(
         white.path(),
         "#!/bin/sh
-echo '[====] Synthesis: Tested: 3 | Passing: 2 | Failing: 1 | Crashing: 0 ' >&2
+echo '[====] Synthesis: Tested: 4 | Passing: 3 | Failing: 1 | Crashing: 0 ' >&2
 exit 1
 ",
     );
 
-    let (ok, events, _ctx) = run_unit(&battery, white);
+    let (ok, events, ctx) = run_unit(&battery, white);
     assert!(!ok, "résumé attestant un échec : étape KO");
+    // 4 records synthétiques : l'échec d'abord (criterion #1), puis
+    // les 3 succès.
+    let tests = finished_tests(&events);
+    assert_eq!(
+        tests.len(),
+        4,
+        "4 tests synthétiques depuis la Synthesis : {tests:?}"
+    );
+    assert_eq!(tests[0].0, "criterion #1");
     assert!(
-        finished_tests(&events).is_empty(),
-        "aucun test individuel en non-verbose : {events:?}"
+        matches!(tests[0].1, TestVerdict::Failed { .. }),
+        "criterion #1 attendu Failed : {tests:?}"
+    );
+    for (name, verdict) in &tests[1..] {
+        assert!(
+            matches!(verdict, TestVerdict::Passed),
+            "{name} attendu Passed : {tests:?}"
+        );
+    }
+    assert_eq!(ctx.tests.len(), 4, "TestRecords : {:?}", ctx.tests);
+    // 3 passed / 4 → 75.0 % : la Synthesis est la vérité du score.
+    let scores = compute_scores(&ctx.tests, &["unit"], &[]);
+    assert_eq!(
+        scores.par_groupe,
+        vec![("unit".to_string(), 75.0)],
+        "score attendu 75.0 : {:?}",
+        scores.par_groupe
     );
     let checks = extract_checks(&events);
     assert!(
@@ -512,6 +570,51 @@ exit 1
     );
     let (ok_ev, skipped, _) = step_finished(&events);
     assert!(!ok_ev && !skipped);
+}
+
+#[test]
+fn synthese_incoherente_avec_les_parses_avertit() {
+    // Résumé incohérent avec les lignes parsées (2 échecs nommés mais
+    // Failing: 1) : les tests parsés PRIMENT, un avertissement est
+    // relayé en LogLine, et la complétion reste bornée par Tested.
+    let (_bat_dir, battery) = load_battery(&battery_toml(true));
+    let white = stage_fixture();
+    write_script(
+        white.path(),
+        "#!/bin/sh
+echo '[FAIL] sample::ko1: (0.01s)' >&2
+echo '[FAIL] sample::ko2: (0.02s)' >&2
+echo '[====] Synthesis: Tested: 3 | Passing: 2 | Failing: 1 | Crashing: 0 ' >&2
+exit 1
+",
+    );
+
+    let (ok, events, ctx) = run_unit(&battery, white);
+    assert!(!ok, "deux échecs parsés : étape KO");
+    // Les 2 Failed parsés sont réels ; la complétion n'ajoute qu'1
+    // Passed synthétique (bornée par Tested=3) — jamais plus.
+    let tests = finished_tests(&events);
+    assert_eq!(tests.len(), 3, "2 réels + 1 synthétique : {tests:?}");
+    assert_eq!(tests[0].0, "sample::ko1");
+    assert_eq!(tests[1].0, "sample::ko2");
+    assert!(matches!(tests[0].1, TestVerdict::Failed { .. }));
+    assert!(matches!(tests[1].1, TestVerdict::Failed { .. }));
+    assert_eq!(tests[2].0, "criterion #1");
+    assert!(matches!(tests[2].1, TestVerdict::Passed));
+    // L'incohérence est relayée en avertissement, pas silencieuse.
+    let logs = log_lines(&events);
+    assert!(
+        logs.iter().any(|l| l.contains("incohérent")),
+        "avertissement d'incohérence absent : {logs:?}"
+    );
+    // 1 passed / 3 → 33.3 %.
+    let scores = compute_scores(&ctx.tests, &["unit"], &[]);
+    assert_eq!(
+        scores.par_groupe,
+        vec![("unit".to_string(), 33.3)],
+        "score attendu 33.3 : {:?}",
+        scores.par_groupe
+    );
 }
 
 #[test]
@@ -534,8 +637,15 @@ exit 1
 
     let (ok, events, ctx) = run_unit(&battery, white);
     assert!(!ok, "un crash : étape KO");
+    // Le crash parsé est réel ; la Synthesis atteste Tested: 2 — un
+    // Passed synthétique complète (non-verbose : seuls les [FAIL]
+    // sont nommés).
     let tests = finished_tests(&events);
-    assert_eq!(tests.len(), 1, "un seul test parsé : {tests:?}");
+    assert_eq!(
+        tests.len(),
+        2,
+        "le crash réel + 1 Passed synthétique : {tests:?}"
+    );
     assert_eq!(
         tests[0].0, "sample::segv",
         "suffixe CRASH! strippé : {tests:?}"
@@ -544,6 +654,8 @@ exit 1
         matches!(tests[0].1, TestVerdict::Crashed(-1)),
         "verdict Crashed(-1) attendu : {tests:?}"
     );
+    assert_eq!(tests[1].0, "criterion #1");
+    assert!(matches!(tests[1].1, TestVerdict::Passed));
     let record = ctx
         .tests
         .iter()
@@ -585,6 +697,8 @@ fn resume_critere_en_plus_des_tests_parses() {
     // Non-verbose avec échec : criterion n'émet que les [FAIL] — sans
     // enregistrement de vérité du résumé, le décompte global
     // rapporterait « 0/1 » alors que la suite est « 3 pass / 1 fail ».
+    // Le [FAIL] parsé est réel ; des Passed SYNTHÉTIQUES complètent
+    // jusqu'à Tested pour que le score reflète la suite (75 %).
     let (_bat_dir, battery) = load_battery(&battery_toml(true));
     let white = stage_fixture();
     write_script(
@@ -596,10 +710,33 @@ exit 1
 ",
     );
 
-    let (ok, events, _ctx) = run_unit(&battery, white);
+    let (ok, events, ctx) = run_unit(&battery, white);
     assert!(!ok, "un échec : étape KO");
     let tests = finished_tests(&events);
-    assert_eq!(tests.len(), 1, "seul le FAIL est parsé : {tests:?}");
+    assert_eq!(
+        tests.len(),
+        4,
+        "le FAIL réel + 3 Passed synthétiques : {tests:?}"
+    );
+    // Le test réel d'abord (parsé), puis les synthétiques.
+    assert_eq!(tests[0].0, "sample::failing");
+    assert!(matches!(tests[0].1, TestVerdict::Failed { .. }));
+    for (i, (name, verdict)) in tests[1..].iter().enumerate() {
+        assert_eq!(name, &format!("criterion #{}", i + 1));
+        assert!(
+            matches!(verdict, TestVerdict::Passed),
+            "{name} attendu Passed : {tests:?}"
+        );
+    }
+    assert_eq!(ctx.tests.len(), 4, "TestRecords : {:?}", ctx.tests);
+    // 3 passed / 4 → 75.0 % : fini le « 0/1 » mensonger.
+    let scores = compute_scores(&ctx.tests, &["unit"], &[]);
+    assert_eq!(
+        scores.par_groupe,
+        vec![("unit".to_string(), 75.0)],
+        "score attendu 75.0 : {:?}",
+        scores.par_groupe
+    );
     let checks = extract_checks(&events);
     assert!(
         checks

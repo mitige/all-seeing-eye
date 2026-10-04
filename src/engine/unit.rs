@@ -19,7 +19,13 @@
 //! Chaque test parsé émet `TestStarted`/`TestFinished` (groupe
 //! [`Step::Unit`]) et alimente `ctx.tests` pour le rapport. Criterion
 //! ne fournit pas de diff exploitable : un `Failed` porte des champs
-//! vides — le détail vit dans les LogLine relayées.
+//! vides — le détail vit dans les LogLine relayées. Et quand la
+//! Synthesis est la seule vérité chiffrée (non-verbose : lignes
+//! par-test absentes ou partielles), des records SYNTHÉTIQUES
+//! « criterion #N » la matérialisent dans `ctx.tests`
+//! ([`synthesize_summary`]) — sinon le groupe « unit » serait vide et
+//! compterait 0 % alors que l'étape est OK : le rapport se
+//! contredirait.
 //!
 //! Verdict : l'étape réussit ssi exit==0 ET aucun test en échec ET au
 //! moins un test attesté (parsé, ou résumé `Tested > 0`). Le vrai
@@ -186,6 +192,11 @@ pub fn run(ctx: &mut PipelineContext, tx: &mpsc::Sender<Event>) -> bool {
         ));
     }
 
+    // Non-verbose : la Synthesis est la seule vérité chiffrée (lignes
+    // par-test absentes ou partielles) — des records synthétiques la
+    // matérialisent pour le rapport et les scores.
+    synthesize_summary(&parsed, tx, ctx, &c);
+
     // Verdict : exit de la règle, puis parsing.
     let mut ok = match outcome.status {
         ExecStatus::Exit(0) => c.check("tests_run", true, "make tests_run ok".to_string()),
@@ -288,6 +299,96 @@ fn run_tests_run(dir: &Path, c: &mut Collect) -> Option<crate::exec::ExecOutcome
                 format!("make tests_run (lancement impossible : {e:#})"),
             );
             None
+        }
+    }
+}
+
+/// Non-verbose criterion : la Synthesis est la seule vérité chiffrée.
+/// Pour que `compute_scores` voie la vérité (sinon le groupe « unit »
+/// est vide → 0 % alors que l'étape est OK — le rapport se
+/// contredirait), des TestRecords SYNTHÉTIQUES sont émis depuis le
+/// résumé, avec leurs events TestStarted/TestFinished (le TUI les
+/// voit comme les autres). Leur nom — « criterion #N » — est
+/// documenté comme synthétique et ne peut entrer en collision avec un
+/// vrai nom de test (« sample::… »).
+///
+/// - aucun test parsé (suite verte non-verbose) : `failing` Failed
+///   puis `passing` Passed, tous synthétiques ;
+/// - tests parsés mais incomplets (non-verbose avec échecs : seuls
+///   les [FAIL] sont nommés) : des Passed synthétiques complètent
+///   jusqu'à Tested — les Failed/Crashed parsés sont réels ;
+/// - jamais plus de Tested records au total : la complétion est
+///   bornée par les places restantes ;
+/// - résumé incohérent avec les parsés (plus d'échecs nommés que
+///   Failing) : les tests parsés priment et un avertissement est
+///   relayé en LogLine.
+///
+/// Les échecs synthétiques sont émis d'abord (« criterion #1…#F »),
+/// puis les succès — l'échec est l'information qui compte.
+fn synthesize_summary(
+    parsed: &ParsedOutput,
+    tx: &mpsc::Sender<Event>,
+    ctx: &mut PipelineContext,
+    c: &Collect,
+) {
+    let Some((tested, passing, failing)) = parsed.summary else {
+        return; // pas de résumé : rien à matérialiser
+    };
+    if tested == 0 {
+        return;
+    }
+    let parsed_failed = parsed
+        .tests
+        .iter()
+        .filter(|(_, v)| !matches!(v, ParsedVerdict::Passed))
+        .count() as u64;
+    let parsed_passed = parsed.tests.len() as u64 - parsed_failed;
+    if parsed_failed > failing {
+        c.log(&format!(
+            "résumé criterion incohérent ({parsed_failed} échecs parsés > Failing: {failing}) : les tests parsés priment"
+        ));
+    }
+    // Places restantes sans jamais dépasser Tested.
+    let mut slots = tested.saturating_sub(parsed.tests.len() as u64);
+    let synthe_failed = failing.saturating_sub(parsed_failed).min(slots);
+    slots -= synthe_failed;
+    let synthe_passed = passing.saturating_sub(parsed_passed).min(slots);
+    let synthe = [
+        (
+            synthe_failed,
+            TestVerdict::Failed {
+                diff: String::new(),
+                expected: String::new(),
+                got: String::new(),
+            },
+        ),
+        (synthe_passed, TestVerdict::Passed),
+    ];
+    let mut n = 0u64;
+    for (count, verdict) in synthe {
+        for _ in 0..count {
+            n += 1;
+            let name = format!("criterion #{n}");
+            super::send(
+                tx,
+                Event::TestStarted {
+                    group: Step::Unit.name().to_string(),
+                    name: name.clone(),
+                },
+            );
+            super::send(
+                tx,
+                Event::TestFinished {
+                    group: Step::Unit.name().to_string(),
+                    name: name.clone(),
+                    result: verdict.clone(),
+                },
+            );
+            ctx.tests.push(super::verdict::test_record(
+                Step::Unit.name(),
+                &name,
+                &verdict,
+            ));
         }
     }
 }
