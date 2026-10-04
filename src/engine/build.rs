@@ -313,7 +313,8 @@ fn epiclang_present() -> bool {
 
 /// Compilateur des deliveries Functions : epiclang si demandé par les
 /// options ET détecté sur la machine, sinon `opts.compiler`.
-fn select_compiler(opts: &RunOpts) -> PathBuf {
+/// Partagé avec functional.rs (Task 9 : compile delivery + harness).
+pub(crate) fn select_compiler(opts: &RunOpts) -> PathBuf {
     if opts.use_epiclang && epiclang_present() {
         PathBuf::from("epiclang")
     } else {

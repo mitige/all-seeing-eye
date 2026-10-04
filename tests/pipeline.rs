@@ -23,8 +23,17 @@ stdout = ""
 
 /// Écrit la batterie minimale dans un tempdir et la charge.
 /// Le TempDir est renvoyé pour garder `battery.root` valide.
+/// Task 9 : l'étape Functional n'est plus un stub — la task ex01 est
+/// réellement compilée avec son harness (posé ici dans le root de la
+/// batterie) puis exécutée (stdout "" attendu, exit 0).
 fn mini_battery() -> (TempDir, Battery) {
     let dir = TempDir::new().unwrap();
+    fs::create_dir(dir.path().join("harness")).unwrap();
+    fs::write(
+        dir.path().join("harness/ex01_main.c"),
+        "void my_putchar(char c);\n\nint main(void)\n{\n    return 0;\n}\n",
+    )
+    .unwrap();
     let path = dir.path().join("moulinette.toml");
     fs::write(&path, MINI_TOML).unwrap();
     (dir, Battery::load(&path).unwrap())
@@ -83,8 +92,9 @@ fn pipeline_emet_7_step_started_dans_l_ordre_puis_run_finished() {
     // sont désactivées — la batterie minimale n'a ni
     // allowed_functions ni tests_run_rule — donc ok:true,
     // skipped:true. 7 StepStarted + 7 StepFinished + 1 RunFinished,
-    // plus les CheckFinished des étapes Prelim (Task 4) et Build
-    // (Task 5) — leur nombre exact dépend de la présence de
+    // plus les CheckFinished des étapes Prelim (Task 4), Build
+    // (Task 5) et Functional (Task 9 — son check « tests » agrégé)
+    // — leur nombre exact dépend de la présence de
     // banana-check-repo sur la machine.
     let finished_ok = events
         .iter()
@@ -136,15 +146,38 @@ fn pipeline_emet_7_step_started_dans_l_ordre_puis_run_finished() {
     for e in &events {
         match e {
             Event::StepStarted { .. } | Event::StepFinished { .. } | Event::RunFinished { .. } => {}
-            // Task 5 : l'étape Build émet ses propres checks (compile
-            // OK ici) et peut relayer des LogLine de sous-processus.
+            // Task 5 : l'étape Build peut relayer des LogLine de
+            // sous-processus ; Task 9 : Functional aussi (compile du
+            // harness — silencieuse ici).
             Event::LogLine { step, .. } => {
-                assert_eq!(*step, Step::Build, "LogLine hors Build : {e:?}");
+                assert!(
+                    matches!(step, Step::Build | Step::Functional),
+                    "LogLine hors Build/Functional : {e:?}"
+                );
+            }
+            // Task 9 : l'étape Functional exécute réellement la task
+            // ex01 (compile + run) — Passed, stdout "" conforme.
+            Event::TestStarted { group, name } => {
+                assert_eq!((group.as_str(), name.as_str()), ("functional", "ex01"));
+            }
+            Event::TestFinished {
+                group,
+                name,
+                result,
+            } => {
+                assert_eq!((group.as_str(), name.as_str()), ("functional", "ex01"));
+                assert!(
+                    matches!(result, seeyou::engine::events::TestVerdict::Passed),
+                    "ex01 attendu Passed : {e:?}"
+                );
             }
             Event::CheckFinished { step, ok, .. } => {
                 assert!(
-                    matches!(step, Step::Prelim | Step::Build | Step::Norme),
-                    "check hors Prelim/Build/Norme : {e:?}"
+                    matches!(
+                        step,
+                        Step::Prelim | Step::Build | Step::Norme | Step::Functional
+                    ),
+                    "check hors Prelim/Build/Norme/Functional : {e:?}"
                 );
                 // Prelim/Build passent sur ce rendu minimal. Norme :
                 // la delivery n'a pas d'en-tête Epitech → la faute
@@ -159,8 +192,9 @@ fn pipeline_emet_7_step_started_dans_l_ordre_puis_run_finished() {
             // delivery.
             Event::NormeFault(f) => {
                 assert_eq!(f.file, PathBuf::from("my_putchar.c"));
-            }
-            other => panic!("événement inattendu : {other:?}"),
+            } // Pas d'arm fourre-tout : le match est exhaustif — un
+              // nouveau variant d'Event casse la compilation, garde-fou
+              // plus fort qu'un panic.
         }
     }
     // La faute C-G1 (pas d'en-tête Epitech — produite par les DEUX

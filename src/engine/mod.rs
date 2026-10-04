@@ -14,7 +14,9 @@ pub mod events;
 /// Publique pour permettre aux tests d'intégration de piloter l'étape
 /// isolément (PipelineContext construit à la main).
 pub mod build;
-mod functional;
+/// Publique pour permettre aux tests d'intégration de piloter l'étape
+/// isolément (PipelineContext construit à la main).
+pub mod functional;
 /// Publique pour permettre aux tests d'intégration de piloter l'étape
 /// isolément (PipelineContext construit à la main).
 pub mod norme;
