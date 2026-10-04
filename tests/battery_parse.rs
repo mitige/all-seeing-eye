@@ -398,6 +398,49 @@ fn validate_rejette_stdout_file_hostile_sur_functional_test() {
     );
 }
 
+/// Batterie Binary : un functional_test, avec un `champ` TOML
+/// additionnel injecté (ligne(s) brute(s) après stdout).
+fn toml_functional_test(champ: &str) -> String {
+    format!(
+        "[project]\nname = \"x\"\ntype = \"binary\"\nbinary = \"x\"\n\n\
+         [[functional_test]]\nname = \"t\"\nstdout = \"\"\n{champ}"
+    )
+}
+
+#[test]
+fn validate_rejette_exit_code_hors_0_255() {
+    // Sur Task comme sur FunctionalTest : un exit code hors plage
+    // POSIX (0..=255) est une erreur de batterie.
+    for mauvais in ["256", "-1"] {
+        let err = load_err(&toml_functions(&format!("exit_code = {mauvais}\n")));
+        assert!(
+            err.contains("exit_code") && err.contains(mauvais),
+            "exit_code = {mauvais} (task) non rejeté proprement : {err}"
+        );
+        let err = load_err(&toml_functional_test(&format!("exit_code = {mauvais}\n")));
+        assert!(
+            err.contains("exit_code") && err.contains(mauvais),
+            "exit_code = {mauvais} (functional_test) non rejeté proprement : {err}"
+        );
+    }
+}
+
+#[test]
+fn validate_rejette_timeout_ms_zero() {
+    // Un timeout nul rendrait tout test KO instantané : refusé sur
+    // Task comme sur FunctionalTest.
+    let err = load_err(&toml_functions("timeout_ms = 0\n"));
+    assert!(
+        err.contains("timeout_ms"),
+        "timeout_ms = 0 (task) non rejeté proprement : {err}"
+    );
+    let err = load_err(&toml_functional_test("timeout_ms = 0\n"));
+    assert!(
+        err.contains("timeout_ms"),
+        "timeout_ms = 0 (functional_test) non rejeté proprement : {err}"
+    );
+}
+
 #[test]
 fn validate_accepte_les_chemins_relatifs_propres() {
     // Sous-dossiers relatifs légitimes : harness, extra_sources — aucun

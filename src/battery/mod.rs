@@ -152,6 +152,17 @@ impl Battery {
                 "task « {} » : `stdout` et `stdout_file` sont mutuellement exclusifs",
                 t.name
             );
+            ensure!(
+                (0..=255).contains(&t.exit_code),
+                "task « {} » : `exit_code` hors 0..=255 ({})",
+                t.name,
+                t.exit_code
+            );
+            ensure!(
+                t.timeout_ms > 0,
+                "task « {} » : `timeout_ms` doit être non nul",
+                t.name
+            );
         }
         for t in &self.functional_test {
             ensure!(
@@ -162,6 +173,17 @@ impl Battery {
             if let Some(f) = &t.stdout_file {
                 ensure_chemin_rendu("stdout_file", f)?;
             }
+            ensure!(
+                (0..=255).contains(&t.exit_code),
+                "functional_test « {} » : `exit_code` hors 0..=255 ({})",
+                t.name,
+                t.exit_code
+            );
+            ensure!(
+                t.timeout_ms > 0,
+                "functional_test « {} » : `timeout_ms` doit être non nul",
+                t.name
+            );
         }
         Ok(())
     }

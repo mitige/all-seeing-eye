@@ -49,6 +49,7 @@ use crate::battery::model::{ProjectType, Task};
 use crate::battery::Battery;
 use crate::exec::{run_capture, ExecOutcome, ExecStatus, Limits, MAX_CAPTURE_BYTES};
 use similar::{ChangeTag, TextDiff};
+use std::borrow::Cow;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -58,6 +59,27 @@ use std::time::Duration;
 /// compile des deliveries de build.rs : instantané en pratique, on
 /// reste borné).
 const COMPILE_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Deadline du calcul de diff : Myers est quadratique sur de grosses
+/// entrées très différentes ; au-delà, similar abandonne
+/// l'optimalité et approxime (le diff reste complet).
+const DIFF_DEADLINE: Duration = Duration::from_millis(500);
+
+/// Seuil de taille cumulée (expected + got) au-delà duquel les
+/// entrées du diff sont abrégées AVANT le calcul ([`abridge`]) : un
+/// diff n'a pas à brasser des captures géantes.
+const DIFF_ABRIDGE_BYTES: usize = 1024 * 1024;
+
+/// Lignes conservées en tête d'une entrée abrégée.
+const DIFF_ABRIDGE_HEAD: usize = 200;
+
+/// Lignes conservées en queue d'une entrée abrégée.
+const DIFF_ABRIDGE_TAIL: usize = 50;
+
+/// Borne de rendu du diff, en lignes : le diff est cloné dans
+/// l'event `TestFinished` ET dans le `TestRecord` du rapport —
+/// jamais de full-dump de plusieurs Mio.
+const DIFF_MAX_LINES: usize = 500;
 
 /// Étape 6 du pipeline : tests fonctionnels. Renvoie `true` ssi tous
 /// les tests sont Passed (désactivation exceptée).
@@ -203,9 +225,10 @@ pub fn run_one(
     (verdict, outcome)
 }
 
-/// Verdict d'un processus sorti normalement : stdout d'abord, puis
-/// stderr, puis exit code — le premier écart est un `Failed`. Enfin,
-/// la garde troncature : tout match sur une capture bornée reste un KO.
+/// Verdict d'un processus sorti normalement : garde troncature AVANT
+/// tout calcul de diff, puis stdout, stderr, exit code — le premier
+/// écart est un `Failed`. Enfin, la garde troncature du cas « tout
+/// matche » : tout match sur une capture bornée reste un KO.
 fn verdict_on_exit(
     outcome: &ExecOutcome,
     code: i32,
@@ -213,6 +236,14 @@ fn verdict_on_exit(
     expected_stderr: &str,
     expected_code: i32,
 ) -> TestVerdict {
+    // Une capture tronquée qui diffère de l'attendu ne produirait
+    // qu'un diff géant (jusqu'à 4 Mio) sur des données partielles —
+    // verdict « sortie tronquée » direct, sans calcul de diff.
+    if (outcome.stdout_truncated && outcome.stdout != expected_stdout)
+        || (outcome.stderr_truncated && outcome.stderr != expected_stderr)
+    {
+        return verdict_sortie_tronquee(outcome, expected_stdout, expected_stderr);
+    }
     if outcome.stdout != expected_stdout {
         return TestVerdict::Failed {
             diff: render_diff(expected_stdout, &outcome.stdout),
@@ -235,31 +266,41 @@ fn verdict_on_exit(
         };
     }
     if outcome.stdout_truncated || outcome.stderr_truncated {
-        let mut flux = Vec::new();
-        if outcome.stdout_truncated {
-            flux.push("stdout");
-        }
-        if outcome.stderr_truncated {
-            flux.push("stderr");
-        }
-        // expected/got : le premier flux tronqué, celui dont la
-        // capture est incomplète.
-        let (expected, got) = if outcome.stdout_truncated {
-            (expected_stdout, outcome.stdout.as_str())
-        } else {
-            (expected_stderr, outcome.stderr.as_str())
-        };
-        return TestVerdict::Failed {
-            diff: format!(
-                "sortie tronquée (capture bornée à {} Mio, {}) — impossible de conclure un Passed",
-                MAX_CAPTURE_BYTES / (1024 * 1024),
-                flux.join(" et "),
-            ),
-            expected: expected.to_string(),
-            got: got.to_string(),
-        };
+        return verdict_sortie_tronquee(outcome, expected_stdout, expected_stderr);
     }
     TestVerdict::Passed
+}
+
+/// Verdict « sortie tronquée » : la capture bornée à
+/// [`MAX_CAPTURE_BYTES`] ne permet ni un Passed (données partielles)
+/// ni un diff fiable. expected/got : le premier flux tronqué, celui
+/// dont la capture est incomplète.
+fn verdict_sortie_tronquee(
+    outcome: &ExecOutcome,
+    expected_stdout: &str,
+    expected_stderr: &str,
+) -> TestVerdict {
+    let mut flux = Vec::new();
+    if outcome.stdout_truncated {
+        flux.push("stdout");
+    }
+    if outcome.stderr_truncated {
+        flux.push("stderr");
+    }
+    let (expected, got) = if outcome.stdout_truncated {
+        (expected_stdout, outcome.stdout.as_str())
+    } else {
+        (expected_stderr, outcome.stderr.as_str())
+    };
+    TestVerdict::Failed {
+        diff: format!(
+            "sortie tronquée (capture bornée à {} Mio, {}) — impossible de conclure un Passed",
+            MAX_CAPTURE_BYTES / (1024 * 1024),
+            flux.join(" et "),
+        ),
+        expected: expected.to_string(),
+        got: got.to_string(),
+    }
 }
 
 /// Diff unified texte de `expected` vs `got` : lignes `-attendu` /
@@ -267,25 +308,100 @@ fn verdict_on_exit(
 /// Une ligne sans terminaison est suivie du marqueur « \ pas de
 /// newline final » — sinon le manque du newline final serait
 /// invisible (« abc\n » vs « abc »).
+///
+/// Trois bornes protègent le rendu d'entrées arbitrairement grosses :
+/// - au-delà d'[`DIFF_ABRIDGE_BYTES`] cumulés, les entrées sont
+///   abrégées ([`abridge`]) AVANT le calcul ;
+/// - le calcul est borné par [`DIFF_DEADLINE`] (similar approxime
+///   au-delà — le diff reste complet, non nécessairement minimal) ;
+/// - le rendu est capé à [`DIFF_MAX_LINES`] lignes (il est cloné dans
+///   l'event `TestFinished` et le `TestRecord` du rapport).
+///
+/// Les caractères de contrôle des lignes sont échappés
+/// ([`escape_controls`]) : un `\r` sinon invisible rendrait un écart
+/// CRLF/LF muet.
 fn render_diff(expected: &str, got: &str) -> String {
-    let diff = TextDiff::from_lines(expected, got);
+    let (expected, got) = if expected.len() + got.len() > DIFF_ABRIDGE_BYTES {
+        (abridge(expected), abridge(got))
+    } else {
+        (Cow::Borrowed(expected), Cow::Borrowed(got))
+    };
+    let diff = TextDiff::configure()
+        .timeout(DIFF_DEADLINE)
+        .diff_lines(expected.as_ref(), got.as_ref());
+    // Compte total des lignes de diff (itérateur paresseux, rien de
+    // construit) pour le marqueur de troncature.
+    let total = diff.iter_all_changes().count();
     let mut out = String::new();
-    for change in diff.iter_all_changes() {
+    for change in diff.iter_all_changes().take(DIFF_MAX_LINES) {
         let sign = match change.tag() {
             ChangeTag::Delete => '-',
             ChangeTag::Insert => '+',
             ChangeTag::Equal => ' ',
         };
-        // Display d'un Change texte écrit sa valeur, terminaison
-        // incluse si présente ; le write! dans un String est
-        // infaillible.
-        let _ = write!(out, "{sign}{change}");
+        out.push(sign);
+        out.push_str(&escape_controls(change.value()));
         if change.missing_newline() {
             out.push('\n');
             out.push_str("\\ pas de newline final\n");
         }
     }
+    if total > DIFF_MAX_LINES {
+        let _ = writeln!(out, "… diff tronqué, {total} lignes au total …");
+    }
     out
+}
+
+/// Abrège une entrée de diff géante : tête de [`DIFF_ABRIDGE_HEAD`]
+/// lignes, marqueur « … N lignes omises … », queue de
+/// [`DIFF_ABRIDGE_TAIL`] lignes. Une entrée déjà courte passe telle
+/// quelle.
+fn abridge(s: &str) -> Cow<'_, str> {
+    let total = s.lines().count();
+    if total <= DIFF_ABRIDGE_HEAD + DIFF_ABRIDGE_TAIL {
+        return Cow::Borrowed(s);
+    }
+    let omises = total - DIFF_ABRIDGE_HEAD - DIFF_ABRIDGE_TAIL;
+    let mut lignes = s.lines();
+    let mut out = String::new();
+    for ligne in lignes.by_ref().take(DIFF_ABRIDGE_HEAD) {
+        out.push_str(ligne);
+        out.push('\n');
+    }
+    let _ = writeln!(out, "… {omises} lignes omises …");
+    // `lines` est double-entrée : la queue se lit à l'envers depuis
+    // la fin de l'itérateur restant, puis se remet à l'endroit.
+    let queue: Vec<&str> = lignes.rev().take(DIFF_ABRIDGE_TAIL).collect();
+    for ligne in queue.iter().rev() {
+        out.push_str(ligne);
+        out.push('\n');
+    }
+    Cow::Owned(out)
+}
+
+/// Rend visibles les caractères de contrôle d'une ligne de diff :
+/// `\r` → `␍`, les autres contrôles < 0x20 (hors `\n`, la
+/// terminaison) → `\xNN`. La tabulation est conservée telle quelle :
+/// légitime dans une sortie C.
+fn escape_controls(s: &str) -> Cow<'_, str> {
+    // Chemin rapide : rien à échapper (les octets < 0x20 ne sont
+    // jamais des octets de continuation UTF-8, le scan par octets est
+    // exact).
+    if !s.bytes().any(|b| b < 0x20 && b != b'\n' && b != b'\t') {
+        return Cow::Borrowed(s);
+    }
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\r' => out.push('␍'),
+            '\n' | '\t' => out.push(c),
+            c if (c as u32) < 0x20 => {
+                let _ = write!(out, "\\x{:02x}", c as u32);
+            }
+            c => out.push(c),
+        }
+    }
+    Cow::Owned(out)
 }
 
 /// Un `Failed` sans sortie à comparer (compile KO, stdout attendu
