@@ -8,8 +8,7 @@
 //! jamais le muter.
 
 use crate::engine::events::{Step, TestVerdict};
-use crate::norme::Severity;
-use crate::tui::dashboard::{App, Selection, StepStatus};
+use crate::tui::dashboard::{couleur_severite, App, Selection, StepStatus};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
@@ -34,18 +33,21 @@ pub(crate) fn render(f: &mut Frame, app: &App, area: Rect) {
         let [haut, bas] =
             Layout::vertical([Constraint::Length(h_pin), Constraint::Min(0)]).areas(inner);
         f.render_widget(Paragraph::new(epingle), haut);
-        rend_scrolle(f, scrolle, app.scroll_back(), bas);
+        rend_scrolle(f, scrolle, app, bas);
     } else {
         let tout: Vec<Line> = epingle.into_iter().chain(scrolle).collect();
-        rend_scrolle(f, tout, app.scroll_back(), inner);
+        rend_scrolle(f, tout, app, inner);
     }
 }
 
 /// Rend les `lignes` ancrées en bas : `scroll_back` lignes de recul
-/// depuis la fin (0 = suit les derniers logs).
-fn rend_scrolle(f: &mut Frame, lignes: Vec<Line>, scroll_back: usize, area: Rect) {
+/// depuis la fin (0 = suit les derniers logs). Tant que `scroll_back`
+/// est ouvert, la fenêtre est gelée sur la longueur au moment du
+/// scroll : les nouveaux logs ne font plus dériver la vue.
+fn rend_scrolle(f: &mut Frame, lignes: Vec<Line>, app: &App, area: Rect) {
     let h = area.height as usize;
-    let end = lignes.len().saturating_sub(scroll_back);
+    let len = app.gel_logs(lignes.len());
+    let end = len.saturating_sub(app.scroll_back());
     let start = end.saturating_sub(h);
     f.render_widget(Paragraph::new(lignes[start..end].to_vec()), area);
 }
@@ -100,6 +102,13 @@ fn contenu_step(app: &App, step: Step) -> (String, Vec<Line<'static>>, Vec<Line<
             texte.push_str(&format!(" — {detail}"));
         }
         epingle.push(Line::styled(texte, Style::default().fg(couleur)));
+    }
+    // Fautes cappées (MAX_NORME) : le reliquat est compté, jamais muet.
+    if step == Step::Norme && app.norme_tronquees() > 0 {
+        epingle.push(Line::styled(
+            format!("… et {} autres", app.norme_tronquees()),
+            Style::default().fg(Color::DarkGray),
+        ));
     }
     let scrolle: Vec<Line<'static>> = st.logs.iter().map(|l| Line::raw(l.clone())).collect();
     if epingle.is_empty() && scrolle.is_empty() {
@@ -177,11 +186,6 @@ fn ligne_diff(l: &str) -> Line<'static> {
 /// (rule)`, coloré par sévérité.
 fn contenu_fault(app: &App, i: usize) -> (String, Vec<Line<'static>>, Vec<Line<'static>>) {
     let faute = &app.norme()[i];
-    let couleur = match faute.severity {
-        Severity::Fatal | Severity::Major => Color::Red,
-        Severity::Minor => Color::Yellow,
-        Severity::Info => Color::DarkGray,
-    };
     let titre = format!("{}:{}", faute.file.display(), faute.line);
     let ligne = Line::styled(
         format!(
@@ -193,7 +197,7 @@ fn contenu_fault(app: &App, i: usize) -> (String, Vec<Line<'static>>, Vec<Line<'
             faute.message,
             faute.rule
         ),
-        Style::default().fg(couleur),
+        Style::default().fg(couleur_severite(&faute.severity)),
     );
     (titre, vec![ligne], Vec::new())
 }
@@ -287,6 +291,60 @@ mod tests {
         let (s, _) = texte(&app, 60, 12);
         assert!(!s.contains("l29"), "encore en bas malgré scroll_back\n{s}");
         assert!(s.contains("l19"), "recul de 10 lignes absent\n{s}");
+    }
+
+    #[test]
+    fn detail_scrolle_gele_la_vue_tant_que_scroll_back_est_ouvert() {
+        let mut app = app();
+        app.apply(Event::StepStarted {
+            step: Step::Build,
+            label: Step::Build.label().to_string(),
+        });
+        for i in 0..30 {
+            app.apply(Event::LogLine {
+                step: Step::Build,
+                line: format!("l{i:02}"),
+            });
+        }
+        va_a(&mut app, Selection::Step(Step::Build));
+        app.scroll_up();
+        let (s1, _) = texte(&app, 60, 12);
+        assert!(s1.contains("l19"), "recul initial absent\n{s1}");
+        // Le run continue : de nouveaux logs arrivent pendant que
+        // l'utilisateur lit — la vue ne doit PAS dériver.
+        for i in 30..40 {
+            app.apply(Event::LogLine {
+                step: Step::Build,
+                line: format!("l{i:02}"),
+            });
+        }
+        let (s2, _) = texte(&app, 60, 12);
+        assert_eq!(s1, s2, "la vue doit être gelée tant que scroll_back > 0");
+        // Revenu en bas : le suivi reprend, les derniers logs sont là.
+        app.scroll_down();
+        let (s3, _) = texte(&app, 60, 12);
+        assert!(s3.contains("l39"), "le suivi ne reprend pas à 0\n{s3}");
+    }
+
+    #[test]
+    fn detail_norme_montre_le_compteur_des_fautes_cappees() {
+        let mut app = app();
+        for i in 0..crate::tui::dashboard::MAX_NORME + 4 {
+            app.apply(Event::NormeFault(NormeFault {
+                file: "src/a.c".into(),
+                line: i as u32,
+                col: 1,
+                severity: Severity::Minor,
+                rule: "C-G1".to_string(),
+                message: "mauvais en-tête".to_string(),
+            }));
+        }
+        va_a(&mut app, Selection::Step(Step::Norme));
+        let (s, _) = texte(&app, 60, 12);
+        assert!(
+            s.contains("et 4 autres"),
+            "compteur de reliquat absent\n{s}"
+        );
     }
 
     #[test]

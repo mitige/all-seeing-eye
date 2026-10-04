@@ -9,8 +9,7 @@
 //! jamais le muter.
 
 use crate::engine::events::{Step, TestVerdict};
-use crate::norme::Severity;
-use crate::tui::dashboard::{groupe_etape, App, Selection, StepStatus};
+use crate::tui::dashboard::{couleur_severite, groupe_etape, App, Selection, StepStatus};
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -26,7 +25,6 @@ pub(crate) fn render(f: &mut Frame, app: &App, area: Rect) {
         return; // terminal minuscule : dégradé, jamais panic
     }
     let rows = app.visible_rows();
-    let lignes: Vec<Line> = rows.iter().map(|s| ligne(app, *s)).collect();
     // Défilement minimal : la sélection reste visible (collée en bas
     // si elle dépasse).
     let sel = rows.iter().position(|s| *s == app.selected());
@@ -35,10 +33,14 @@ pub(crate) fn render(f: &mut Frame, app: &App, area: Rect) {
         Some(i) if i >= h => i + 1 - h,
         _ => 0,
     };
-    f.render_widget(
-        Paragraph::new(lignes).scroll((start.min(u16::MAX as usize) as u16, 0)),
-        inner,
-    );
+    // Fenêtré : seules les lignes visibles sont construites — un
+    // arbre de 2000 fautes ne matérialise pas 2000 `Line`.
+    let lignes: Vec<Line> = rows[start..]
+        .iter()
+        .take(h)
+        .map(|s| ligne(app, *s))
+        .collect();
+    f.render_widget(Paragraph::new(lignes), inner);
     // Surlignage pleine largeur (bordures comprises) de la sélection.
     if let Some(i) = sel {
         if i >= start && i - start < h {
@@ -98,14 +100,9 @@ fn ligne_step(app: &App, step: Step) -> Line<'static> {
 /// Ligne d'une faute de norme, colorée par sévérité.
 fn ligne_fault(app: &App, i: usize) -> Line<'static> {
     let faute = &app.norme()[i];
-    let couleur = match faute.severity {
-        Severity::Fatal | Severity::Major => Color::Red,
-        Severity::Minor => Color::Yellow,
-        Severity::Info => Color::DarkGray,
-    };
     Line::from(Span::styled(
         format!("    ⚠ {}:{}", faute.file.display(), faute.line),
-        Style::default().fg(couleur),
+        Style::default().fg(couleur_severite(&faute.severity)),
     ))
 }
 

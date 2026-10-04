@@ -459,6 +459,31 @@ fn filtre_ne_garde_que_les_echecs() {
 }
 
 #[test]
+fn filtre_post_run_garde_le_verdict_visible() {
+    let mut app = app();
+    app.apply(started(Step::Verdict));
+    app.apply(finished_ok(Step::Verdict));
+    app.toggle_failures();
+    // En cours de run (pas de rapport) : Verdict ok sans échec, masqué.
+    assert!(
+        !app.visible_rows().contains(&Selection::Step(Step::Verdict)),
+        "avant le rapport, le Verdict n'a rien à montrer en filtre"
+    );
+    // Post-run : le Verdict mène au détail des scores — toujours visible.
+    app.apply(Event::RunFinished {
+        report: Box::new(mini_report()),
+    });
+    assert!(
+        app.visible_rows().contains(&Selection::Step(Step::Verdict)),
+        "le Verdict doit rester visible en filtre post-run"
+    );
+    // Un arbre qui n'est QUE le Verdict reste navigable.
+    app.next();
+    app.prev();
+    assert_eq!(app.selected(), Selection::Step(Step::Verdict));
+}
+
+#[test]
 fn filtre_reclame_la_selection_devenue_invisible() {
     let mut app = app_garnie();
     // Sélectionne le test « a » (passed) : le filtre va le masquer.

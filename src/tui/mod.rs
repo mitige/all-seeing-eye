@@ -35,6 +35,12 @@ use crate::report::Report;
 /// rafraîchis à chaque tour).
 const POLL: Duration = Duration::from_millis(50);
 
+/// Bornes du drain par tick : au plus `DRAIN_MAX_EVENTS` events OU
+/// `DRAIN_MAX_DUREE` écoulée. Le reliquat attend le tick suivant —
+/// le canal conserve tout, rien n'est perdu, le clavier ne starve pas.
+const DRAIN_MAX_EVENTS: usize = 1000;
+const DRAIN_MAX_DUREE: Duration = Duration::from_millis(5);
+
 /// Lance le TUI : consomme les events du pipeline (qui tourne dans un
 /// autre thread, branché par le CLI Task 12), restaure le terminal à
 /// la sortie (`q`), retourne le rapport final.
@@ -95,38 +101,50 @@ fn boucle(
 ) -> Result<()> {
     let mut dirty = true; // premier rendu d'office
     loop {
-        // 1. Touches (Resize & co : dirty quand même, ratatui
-        //    recalcule au redraw).
+        // 1. Touches : TOUTES celles en attente — une seule par tour
+        //    laisserait une rafale clavier s'accumuler (starvation).
+        //    Resize & co : dirty quand même, ratatui recalcule au
+        //    redraw.
         if event::poll(POLL).context("poll terminal")? {
-            if let CrosstermEvent::Key(key) = event::read().context("lecture event terminal")? {
-                match keys::action_for(key) {
-                    Some(Action::Quit) => return Ok(()),
-                    Some(Action::Next) => app.next(),
-                    Some(Action::Prev) => app.prev(),
-                    Some(Action::ScrollUp) => app.scroll_up(),
-                    Some(Action::ScrollDown) => app.scroll_down(),
-                    Some(Action::ToggleFailures) => app.toggle_failures(),
-                    Some(Action::Export) => {
-                        // Le succès pose son propre message (chemin) ;
-                        // l'erreur doit être visible aussi.
-                        if let Err(e) = app.export() {
-                            app.set_footer_message(format!("export impossible : {e:#}"));
+            loop {
+                if let CrosstermEvent::Key(key) = event::read().context("lecture event terminal")? {
+                    match keys::action_for(key) {
+                        Some(Action::Quit) => return Ok(()),
+                        Some(Action::Next) => app.next(),
+                        Some(Action::Prev) => app.prev(),
+                        Some(Action::ScrollUp) => app.scroll_up(),
+                        Some(Action::ScrollDown) => app.scroll_down(),
+                        Some(Action::ToggleFailures) => app.toggle_failures(),
+                        Some(Action::Export) => {
+                            // Le succès pose son propre message (chemin) ;
+                            // l'erreur doit être visible aussi.
+                            if let Err(e) = app.export() {
+                                app.set_footer_message(format!("export impossible : {e:#}"));
+                            }
                         }
+                        None => {}
                     }
-                    None => {}
+                }
+                if !event::poll(Duration::ZERO).context("poll terminal")? {
+                    break;
                 }
             }
             dirty = true;
         }
-        // 2. Events du pipeline : tout ce qui est en attente.
+        // 2. Events du pipeline : drain borné — et plus rien n'est
+        //    attendu d'un pipeline mort (canal fermé sans verdict).
         if let Some(rx) = rx {
-            if drain(rx, app) {
+            if !app.pipeline_dead() && drain(rx, app) {
                 dirty = true;
             }
         }
-        // 3. En cours de run : spinner + chrono vivants à chaque tick.
-        if app.finished().is_none() {
-            app.tick();
+        // 3. Tick : spinner + chrono vivants en cours de run — figés
+        //    si le pipeline est mort (pas de spinner éternel). Le TTL
+        //    du footer tourne dans tous les cas : un message qui
+        //    expire impose un redraw.
+        let en_run = app.finished().is_none() && !app.pipeline_dead();
+        let expire = app.tick();
+        if en_run || expire {
             dirty = true;
         }
         // 4. Redraw si dirty.
@@ -142,13 +160,36 @@ fn boucle(
     }
 }
 
-/// Draine tous les events en attente du canal dans l'app ; true si au
-/// moins un a été appliqué (redraw nécessaire).
+/// Draine les events en attente du canal dans l'app, borné à
+/// [`DRAIN_MAX_EVENTS`] events ou [`DRAIN_MAX_DUREE`] par tick (le
+/// reliquat reste dans le canal pour le tick suivant). Un canal fermé
+/// SANS `RunFinished` marque le pipeline mort — état visible, on
+/// cesse d'attendre. True si un redraw est nécessaire.
 fn drain(rx: &mpsc::Receiver<Event>, app: &mut App) -> bool {
+    let debut = Instant::now();
     let mut recu = false;
-    while let Ok(ev) = rx.try_recv() {
-        app.apply(ev);
-        recu = true;
+    let mut n = 0;
+    loop {
+        match rx.try_recv() {
+            Ok(ev) => {
+                app.apply(ev);
+                recu = true;
+                n += 1;
+            }
+            Err(mpsc::TryRecvError::Empty) => break,
+            // Le sender est tombé sans verdict : plus rien n'arrivera.
+            // (Après RunFinished, la fermeture est la fin normale.)
+            Err(mpsc::TryRecvError::Disconnected) => {
+                if app.finished().is_none() && !app.pipeline_dead() {
+                    app.set_pipeline_dead();
+                    recu = true; // redraw : le bandeau apparaît
+                }
+                break;
+            }
+        }
+        if n >= DRAIN_MAX_EVENTS || debut.elapsed() >= DRAIN_MAX_DUREE {
+            break;
+        }
     }
     recu
 }
@@ -199,6 +240,13 @@ fn render_header(f: &mut Frame, app: &App, area: Rect) {
             " ▸ {}",
             mmss(Duration::from_secs_f64(report.duration_secs.max(0.0)))
         )));
+    } else if app.pipeline_dead() {
+        // Canal fermé sans verdict : on le hurle, le chrono continue.
+        spans.push(Span::styled(
+            "pipeline interrompu",
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::raw(format!(" ▸ {}", mmss(app.started().elapsed()))));
     } else {
         match app.current_step() {
             Some(step) => {
@@ -226,10 +274,16 @@ fn render_header(f: &mut Frame, app: &App, area: Rect) {
     );
 }
 
-/// Footer : message éphémère (export) s'il y en a un, sinon les
-/// raccourcis — avec rappel du filtre échecs actif.
+/// Footer : pipeline mort (bandeau rouge dédié, prioritaire), sinon
+/// message éphémère (export) s'il y en a un, sinon les raccourcis —
+/// avec rappel du filtre échecs actif.
 fn render_footer(f: &mut Frame, app: &App, area: Rect) {
-    let ligne = if let Some(msg) = app.footer_message() {
+    let ligne = if app.pipeline_dead() && app.finished().is_none() {
+        Line::styled(
+            "pipeline interrompu sans verdict — q pour quitter",
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        )
+    } else if let Some(msg) = app.footer_message() {
         Line::styled(msg, Style::default().fg(Color::Green))
     } else {
         let mut texte = "↑↓/jk naviguer · f échecs · e exporter · q quitter".to_string();
@@ -273,6 +327,76 @@ mod tests {
         assert_eq!(mmss(Duration::from_secs(65)), "01:05");
         // Au-delà d'une heure : les minutes débordent, jamais de panic.
         assert_eq!(mmss(Duration::from_secs(3600)), "60:00");
+    }
+
+    #[test]
+    fn deconnexion_sans_verdict_marque_le_pipeline_mort() {
+        let (tx, rx) = mpsc::channel::<Event>();
+        let mut app = App::new("mini".to_string(), Instant::now());
+        tx.send(Event::StepStarted {
+            step: Step::Build,
+            label: Step::Build.label().to_string(),
+        })
+        .unwrap();
+        // Le thread pipeline meurt (panic…) sans envoyer RunFinished.
+        drop(tx);
+        assert!(drain(&rx, &mut app));
+        assert!(
+            app.pipeline_dead(),
+            "la déconnexion sans verdict doit être un état visible"
+        );
+        // Bandeau dédié : l'utilisateur sait que le spinner ne rendra
+        // jamais de verdict.
+        let s = texte(&app, 100, 30);
+        assert!(
+            s.contains("pipeline interrompu sans verdict"),
+            "bandeau pipeline mort absent\n{s}"
+        );
+    }
+
+    #[test]
+    fn deconnexion_apres_run_finished_n_est_pas_une_mort() {
+        let (tx, rx) = mpsc::channel();
+        let mut app = App::new("mini".to_string(), Instant::now());
+        tx.send(Event::RunFinished {
+            report: Box::new(mini_report()),
+        })
+        .unwrap();
+        // Fin normale : le CLI ferme le canal après le verdict.
+        drop(tx);
+        assert!(drain(&rx, &mut app));
+        assert!(!app.pipeline_dead(), "le verdict est là : pas de mort");
+    }
+
+    #[test]
+    fn drain_est_borne_et_laisse_le_reliquat_au_tick_suivant() {
+        let (tx, rx) = mpsc::channel();
+        let mut app = App::new("mini".to_string(), Instant::now());
+        // 10k events d'un coup (rafale) : les checks ne sont pas
+        // cappés, ils comptent exactement les events appliqués.
+        for i in 0..10_000 {
+            tx.send(Event::CheckFinished {
+                step: Step::Build,
+                name: format!("check {i}"),
+                ok: true,
+                detail: String::new(),
+            })
+            .unwrap();
+        }
+        assert!(drain(&rx, &mut app));
+        assert_eq!(
+            app.step(Step::Build).checks.len(),
+            1000,
+            "le drain doit sortir après 1000 events (clavier non affamé)"
+        );
+        // Reliquat intact : le tick suivant en absorbe 1000 de plus.
+        assert!(drain(&rx, &mut app));
+        assert_eq!(app.step(Step::Build).checks.len(), 2000);
+        // …et les ticks d'après absorbent tout, rien n'est perdu.
+        for _ in 0..8 {
+            assert!(drain(&rx, &mut app));
+        }
+        assert_eq!(app.step(Step::Build).checks.len(), 10_000);
     }
 
     #[test]

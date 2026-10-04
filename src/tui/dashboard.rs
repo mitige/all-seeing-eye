@@ -4,14 +4,16 @@
 //! l'arbre visible ([`App::visible_rows`]), la navigation (↑↓/jk), le
 //! filtre « échecs seulement », la reconstruction depuis un [`Report`]
 //! (mode `browse`) et l'export texte. Le rendu (`tree`, `detail`) lit
-//! `App` sans jamais le muter : toute la logique est testée hors
-//! terminal (`tests/tui.rs`).
+//! `App` sans jamais le muter — seuls le gel du scroll (`Cell`) et le
+//! message du footer (`RefCell`) bougent hors `apply` : toute la
+//! logique est testée hors terminal (`tests/tui.rs`).
 
 use crate::engine::events::{Event, Step, TestVerdict};
-use crate::norme::NormeFault;
+use crate::norme::{NormeFault, Severity};
 use crate::report::{render_text, Report, TestRecord};
 use anyhow::{Context, Result};
-use std::cell::RefCell;
+use ratatui::style::Color;
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
@@ -21,6 +23,15 @@ use std::time::{Instant, SystemTime};
 /// marqueur « … N lignes tronquées … » clôt la liste : jamais plus de
 /// `MAX_LOGS + 1` entrées, jamais de croissance non bornée.
 pub const MAX_LOGS: usize = 500;
+
+/// Nombre max de fautes de norme conservées. Au-delà, les fautes sont
+/// comptées (`norme_tronquees`) et le détail de l'étape Norme affiche
+/// « … et N autres » — même esprit que [`MAX_LOGS`].
+pub const MAX_NORME: usize = 2000;
+
+/// Durée de vie d'un message de footer, en ticks de boucle
+/// (80 × [`POLL`](crate::tui) 50 ms ≈ 4 s).
+pub(crate) const FOOTER_TTL_TICKS: u32 = 80;
 
 /// Pas de défilement du panneau de détail (lignes par PgUp/PgDn).
 pub(crate) const SCROLL_PAS: usize = 10;
@@ -87,15 +98,19 @@ impl StepState {
     }
 
     /// Ajoute une ligne de log, cappée à [`MAX_LOGS`] : au-delà, un
-    /// marqueur final « … N lignes tronquées … » (mis à jour) clôt la
-    /// liste.
+    /// marqueur final « … N ligne(s) tronquée(s) … » (mis à jour)
+    /// clôt la liste.
     fn pousse_log(&mut self, line: String) {
         if self.logs.len() < MAX_LOGS {
             self.logs.push(line);
             return;
         }
         self.tronquees += 1;
-        let marqueur = format!("… {} lignes tronquées …", self.tronquees);
+        let marqueur = if self.tronquees == 1 {
+            "… 1 ligne tronquée …".to_string()
+        } else {
+            format!("… {} lignes tronquées …", self.tronquees)
+        };
         if self.logs.len() > MAX_LOGS {
             // Le marqueur existe déjà : on le met à jour en place.
             if let Some(derniere) = self.logs.last_mut() {
@@ -162,13 +177,27 @@ pub(crate) fn groupe_etape(name: &str) -> Step {
     }
 }
 
+/// Couleur d'affichage d'une sévérité de norme — helper unique
+/// partagé par l'arbre (`tree`) et le détail (`detail`).
+pub(crate) fn couleur_severite(severity: &Severity) -> Color {
+    match severity {
+        Severity::Fatal | Severity::Major => Color::Red,
+        Severity::Minor => Color::Yellow,
+        Severity::Info => Color::DarkGray,
+    }
+}
+
 /// État complet du dashboard.
 pub struct App {
     battery: String,
     started: Instant,
     steps: BTreeMap<Step, StepState>,
     groups: Vec<GroupState>,
+    /// Cappé à [`MAX_NORME`] ; le reliquat est compté.
     norme: Vec<NormeFault>,
+    /// Fautes de norme perdues par troncature (au-delà de
+    /// [`MAX_NORME`]) — affichées « … et N autres » dans le détail.
+    norme_tronquees: usize,
     selected: Selection,
     /// Suivi automatique : tant que l'utilisateur ne navigue pas, la
     /// sélection colle à l'étape courante.
@@ -176,13 +205,22 @@ pub struct App {
     filter_failures: bool,
     /// Recul du détail en lignes depuis le bas (0 = suit la fin).
     scroll_back: usize,
+    /// Gel du scroll du détail : longueur de contenu figée au premier
+    /// scroll (`Cell` : la vue lit `&App`, jamais `&mut`). Tant que
+    /// `scroll_back` > 0, les nouveaux logs ne font plus dériver la
+    /// vue ; le gel se libère au retour à 0.
+    scroll_gel: Cell<Option<usize>>,
     spinner_frame: usize,
     /// Dernière étape ayant démarré ou fini (header entre deux étapes).
     current_step: Option<Step>,
     finished: Option<Report>,
-    /// Message éphémère du footer (confirmation/erreur d'export).
-    /// `RefCell` : `export` est en `&self` (cf. tests).
-    footer_message: RefCell<Option<String>>,
+    /// Le canal d'events a été fermé SANS `RunFinished` (thread
+    /// pipeline mort) : bandeau visible, plus rien n'est attendu.
+    pipeline_dead: bool,
+    /// Message éphémère du footer (confirmation/erreur d'export) et
+    /// son TTL en ticks ([`FOOTER_TTL_TICKS`] ≈ 4 s, décrémenté par
+    /// [`App::tick`]). `RefCell` : `export` est en `&self` (cf. tests).
+    footer_message: RefCell<Option<(String, u32)>>,
 }
 
 impl App {
@@ -199,13 +237,16 @@ impl App {
             steps,
             groups: Vec::new(),
             norme: Vec::new(),
+            norme_tronquees: 0,
             selected: Selection::Step(Step::Prelim),
             follow: true,
             filter_failures: false,
             scroll_back: 0,
+            scroll_gel: Cell::new(None),
             spinner_frame: 0,
             current_step: None,
             finished: None,
+            pipeline_dead: false,
             footer_message: RefCell::new(None),
         }
     }
@@ -242,7 +283,9 @@ impl App {
             app.groups[g].tests[i].verdict = Some(verdict);
             app.groups[g].tests[i].detail = detail;
         }
-        app.norme = report.norme.clone();
+        // Même cap qu'en live : le reliquat est compté, jamais muet.
+        app.norme_tronquees = report.norme.len().saturating_sub(MAX_NORME);
+        app.norme = report.norme.iter().take(MAX_NORME).cloned().collect();
         // Post-run d'emblée : pas de suivi auto, rapport posé.
         app.follow = false;
         app.finished = Some(report);
@@ -302,7 +345,15 @@ impl App {
                 self.groups[g].tests[i].verdict = Some(result);
                 self.groups[g].tests[i].detail = detail;
             }
-            Event::NormeFault(f) => self.norme.push(f),
+            Event::NormeFault(f) => {
+                // Cappé comme les logs : au-delà, on compte le
+                // reliquat (affiché « … et N autres » dans le détail).
+                if self.norme.len() < MAX_NORME {
+                    self.norme.push(f);
+                } else {
+                    self.norme_tronquees += 1;
+                }
+            }
             Event::StepFinished {
                 step,
                 ok,
@@ -378,9 +429,16 @@ impl App {
         &self.groups
     }
 
-    /// Fautes de norme accumulées, dans l'ordre d'arrivée.
+    /// Fautes de norme accumulées, dans l'ordre d'arrivée, cappées à
+    /// [`MAX_NORME`].
     pub fn norme(&self) -> &[NormeFault] {
         &self.norme
+    }
+
+    /// Fautes de norme perdues par troncature (au-delà de
+    /// [`MAX_NORME`]) — affichées « … et N autres » dans le détail.
+    pub fn norme_tronquees(&self) -> usize {
+        self.norme_tronquees
     }
 
     /// Sélection courante (peut pointer une ligne masquée par le
@@ -393,6 +451,18 @@ impl App {
     /// [`App::from_report`].
     pub fn finished(&self) -> Option<&Report> {
         self.finished.as_ref()
+    }
+
+    /// Le pipeline est-il mort sans verdict (canal fermé avant
+    /// `RunFinished`) ?
+    pub fn pipeline_dead(&self) -> bool {
+        self.pipeline_dead
+    }
+
+    /// Marque le pipeline mort (canal fermé sans verdict) : le TUI
+    /// cesse d'attendre des events et l'affiche.
+    pub(crate) fn set_pipeline_dead(&mut self) {
+        self.pipeline_dead = true;
     }
 
     /// Nom de la batterie (= projet du rapport en mode browse).
@@ -410,13 +480,17 @@ impl App {
         self.scroll_back
     }
 
-    /// Message éphémère du footer (confirmation/erreur d'export).
+    /// Message éphémère du footer (confirmation/erreur d'export),
+    /// s'il n'a pas expiré (TTL [`FOOTER_TTL_TICKS`] ticks ≈ 4 s).
     pub fn footer_message(&self) -> Option<String> {
-        self.footer_message.borrow().clone()
+        self.footer_message
+            .borrow()
+            .as_ref()
+            .map(|(msg, _)| msg.clone())
     }
 
     pub(crate) fn set_footer_message(&self, msg: String) {
-        *self.footer_message.borrow_mut() = Some(msg);
+        *self.footer_message.borrow_mut() = Some((msg, FOOTER_TTL_TICKS));
     }
 
     pub(crate) fn started(&self) -> Instant {
@@ -433,10 +507,34 @@ impl App {
         SPINNER.chars().nth(self.spinner_frame % n).unwrap_or('│')
     }
 
-    /// Avance le spinner d'une frame (appelé à chaque tour de boucle
-    /// tant que le run n'est pas fini).
-    pub(crate) fn tick(&mut self) {
+    /// Avance le spinner d'une frame et fait vieillir le message du
+    /// footer (TTL [`FOOTER_TTL_TICKS`] ticks ≈ 4 s). Retourne true si
+    /// le message vient d'expirer (le footer change : redraw).
+    pub(crate) fn tick(&mut self) -> bool {
         self.spinner_frame = self.spinner_frame.wrapping_add(1);
+        let mut fm = self.footer_message.borrow_mut();
+        if let Some((_, ttl)) = fm.as_mut() {
+            *ttl -= 1;
+            if *ttl == 0 {
+                *fm = None;
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Longueur de contenu à considérer par la vue scrollable du
+    /// détail : tant que `scroll_back` > 0, figée à la longueur du
+    /// premier scroll (les nouveaux logs ne font plus dériver la vue) ;
+    /// libérée au retour à 0 (le suivi reprend).
+    pub(crate) fn gel_logs(&self, len: usize) -> usize {
+        if self.scroll_back == 0 {
+            self.scroll_gel.set(None);
+            return len;
+        }
+        let gel = self.scroll_gel.get().unwrap_or(len);
+        self.scroll_gel.set(Some(gel));
+        gel.min(len)
     }
 
     // ── arbre visible ─────────────────────────────────────────────
@@ -445,7 +543,8 @@ impl App {
     /// l'ordre pipeline, avec sous Norme ses fautes, sous
     /// Unit/Functional leurs tests (les groupes au nom inconnu sont
     /// rattachés au Verdict). En mode filtre : seules les étapes KO
-    /// et les parents d'échecs, avec leurs feuilles en échec.
+    /// et les parents d'échecs, avec leurs feuilles en échec — sauf
+    /// le Verdict post-run, toujours visible (détail des scores).
     pub fn visible_rows(&self) -> Vec<Selection> {
         let mut rows = Vec::new();
         for step in ETAPES {
@@ -456,8 +555,12 @@ impl App {
                 .collect();
             if self.filter_failures {
                 let ko = self.step(step).status == StepStatus::Ko;
-                // Visible si KO soi-même ou parent de feuilles en échec.
-                if !ko && feuilles.is_empty() {
+                // Post-run, le Verdict (toujours ok) reste visible :
+                // c'est lui qui mène au détail des scores.
+                let garde = ko || (step == Step::Verdict && self.finished.is_some());
+                // Visible si KO soi-même, Verdict post-run, ou parent
+                // de feuilles en échec.
+                if !garde && feuilles.is_empty() {
                     continue;
                 }
             }
@@ -582,9 +685,14 @@ impl App {
             .with_context(|| format!("création de {} impossible", dir.display()))?;
         let ts = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        let path = dir.join(format!("export-{ts}.txt"));
+            .unwrap_or_default();
+        // Centièmes dans le nom : deux exports dans la même seconde
+        // ne s'écrasent plus.
+        let path = dir.join(format!(
+            "export-{}.{:02}.txt",
+            ts.as_secs(),
+            ts.subsec_millis() / 10
+        ));
         fs::write(&path, render_text(report))
             .with_context(|| format!("écriture de {} impossible", path.display()))?;
         self.set_footer_message(format!("exporté → {}", path.display()));
@@ -679,7 +787,8 @@ mod tests {
         // Pile au cap : aucune perte, aucun marqueur.
         assert_eq!(a.step(Step::Build).logs.len(), MAX_LOGS);
         assert!(!a.step(Step::Build).logs[MAX_LOGS - 1].contains("tronqu"));
-        // Premier dépassement : le marqueur apparaît, compteur à 1…
+        // Premier dépassement : le marqueur apparaît, compteur à 1 —
+        // avec le singulier correct.
         a.apply(Event::LogLine {
             step: Step::Build,
             line: "de trop".to_string(),
@@ -687,7 +796,7 @@ mod tests {
         assert_eq!(a.step(Step::Build).logs.len(), MAX_LOGS + 1);
         assert_eq!(
             a.step(Step::Build).logs.last().unwrap(),
-            "… 1 lignes tronquées …"
+            "… 1 ligne tronquée …"
         );
         // …et il se met à jour sans jamais grandir.
         a.apply(Event::LogLine {
@@ -751,6 +860,44 @@ mod tests {
             verdict_depuis_record(&rec("bizarre", None)),
             TestVerdict::Failed { .. }
         ));
+    }
+
+    #[test]
+    fn footer_message_expire_apres_le_ttl_de_ticks() {
+        let mut a = app();
+        a.set_footer_message("exporté → /tmp/x".to_string());
+        assert!(a.footer_message().is_some());
+        // Vivant pendant toute la durée du TTL…
+        for i in 1..FOOTER_TTL_TICKS {
+            a.tick();
+            assert!(
+                a.footer_message().is_some(),
+                "message expiré trop tôt (tick {i})"
+            );
+        }
+        // …puis effacé au tick qui atteint le TTL.
+        a.tick();
+        assert!(
+            a.footer_message().is_none(),
+            "message toujours là après le TTL"
+        );
+    }
+
+    #[test]
+    fn norme_est_cappee_avec_compteur_de_reliquat() {
+        let mut a = app();
+        for i in 0..MAX_NORME + 3 {
+            a.apply(Event::NormeFault(NormeFault {
+                file: "src/a.c".into(),
+                line: i as u32,
+                col: 1,
+                severity: crate::norme::Severity::Minor,
+                rule: "C-G1".to_string(),
+                message: "mauvais en-tête".to_string(),
+            }));
+        }
+        assert_eq!(a.norme().len(), MAX_NORME, "fautes cappées");
+        assert_eq!(a.norme_tronquees(), 3, "reliquat compté");
     }
 
     #[test]
