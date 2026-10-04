@@ -1,7 +1,7 @@
 //! Tests du modèle de batterie TOML (Task 1).
 
 use all_seeing_eye::battery::model::ProjectType;
-use all_seeing_eye::battery::Battery;
+use all_seeing_eye::battery::{self, Battery};
 use std::fs;
 use std::path::PathBuf;
 use tempfile::TempDir;
@@ -532,6 +532,116 @@ fn discover_tier2_nom_non_matchant_erreur() {
         !msg.contains("mysh.toml"),
         "une batterie valide ne doit pas être listée comme invalide : {msg}"
     );
+}
+
+// ── Task 13 : batterie embarquée cpool_day03 ─────────────────────
+
+/// Les 8 tasks du Day03, dans l'ordre du sujet.
+const DAY03_TASKS: [&str; 8] = [
+    "my_print_alpha",
+    "my_print_revalpha",
+    "my_print_digits",
+    "my_isneg",
+    "my_print_comb",
+    "my_print_comb2",
+    "my_put_nbr",
+    "my_print_combn",
+];
+
+#[test]
+fn embedded_batteries_liste_cpool_day03() {
+    let (_, contenu) = battery::embedded_batteries()
+        .into_iter()
+        .find(|(n, _)| *n == "cpool_day03")
+        .expect("cpool_day03 doit être embarquée");
+    let b: Battery = toml::from_str(contenu).expect("TOML embarqué invalide");
+    assert_eq!(b.project.name, "cpool_day03");
+    assert_eq!(b.project.kind, ProjectType::Functions);
+    let noms: Vec<&str> = b.task.iter().map(|t| t.name.as_str()).collect();
+    assert_eq!(noms, DAY03_TASKS);
+}
+
+#[test]
+fn extract_embedded_inconnue_est_none_et_nom_valide() {
+    assert!(battery::extract_embedded("nope").unwrap().is_none());
+    // Un « nom » qui est un chemin est rejeté : jamais de résolution
+    // hors du contenu embarqué.
+    for hostile in ["", ".", "..", "a/b", "a\\b"] {
+        assert!(
+            battery::extract_embedded(hostile).is_err(),
+            "accepté : « {hostile} »"
+        );
+    }
+}
+
+#[test]
+fn extract_embedded_recopie_toml_harness_et_expected() {
+    let tmp = battery::extract_embedded("cpool_day03")
+        .unwrap()
+        .expect("cpool_day03 embarquée");
+    let root = tmp.path();
+    let toml = root.join("cpool_day03.toml");
+    assert!(toml.is_file(), "TOML extrait manquant");
+    let harness = root.join("cpool_day03/harness");
+    assert!(harness.join("my_putchar.c").is_file());
+    for t in DAY03_TASKS {
+        assert!(
+            harness.join(format!("main_{t}.c")).is_file(),
+            "harness main_{t}.c manquant"
+        );
+        assert!(
+            root.join(format!("cpool_day03/expected/{t}.out")).is_file(),
+            "expected {t}.out manquant"
+        );
+    }
+    // Le TOML extrait se charge : root = tempdir, stdout_file résolus.
+    let b = Battery::load(&toml).unwrap();
+    assert_eq!(b.root, root);
+    for t in &b.task {
+        b.expected_stdout_of_task(t)
+            .unwrap_or_else(|e| panic!("stdout de « {} » illisible : {e:#}", t.name));
+    }
+    // Spot-checks contre le sujet (sorties brutes, sans newline final).
+    let alpha = b.expected_stdout_of_task(&b.task[0]).unwrap();
+    assert_eq!(alpha, "abcdefghijklmnopqrstuvwxyz");
+    let comb = &b.expected_stdout_of_task(&b.task[4]).unwrap();
+    assert!(comb.starts_with("012, 013, 014") && comb.ends_with(", 789"));
+    assert!(!comb.contains("987") && !comb.contains("999"));
+    let nbr = b.expected_stdout_of_task(&b.task[6]).unwrap();
+    assert!(nbr.contains("-2147483648"), "INT_MIN absent : {nbr}");
+}
+
+#[test]
+fn load_embedded_inconnue_est_none() {
+    assert!(battery::load_embedded("nope").unwrap().is_none());
+}
+
+#[test]
+fn discover_tier3_embarquee_par_nom_de_dossier() {
+    let _lock = XDG_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
+    // Config vide : les tiers 1 et 2 ne matchent pas, seul le tier 3
+    // (embarquées) peut répondre.
+    let config = TempDir::new().unwrap();
+    let _xdg = xdg_config(&config.path().join(".config"));
+    let work = TempDir::new().unwrap();
+    let projet = work.path().join("cpool_day03");
+    fs::create_dir(&projet).unwrap();
+
+    let b = Battery::discover(&projet).unwrap();
+
+    assert_eq!(b.project.name, "cpool_day03");
+    // root pointe dans le TempDir d'extraction, qui doit être VIVANT
+    // (détenu par la batterie) : les assets restent lisibles après le
+    // retour de discover — y compris depuis un clone après drop de
+    // l'original (le pipeline clone la batterie dans son thread).
+    let b2 = b.clone();
+    drop(b);
+    assert!(
+        b2.root.join("cpool_day03/harness/my_putchar.c").is_file(),
+        "le TempDir d'extraction n'a pas survécu (root : {})",
+        b2.root.display()
+    );
+    assert!(b2.expected_stdout_of_task(&b2.task[0]).is_ok());
 }
 
 #[test]

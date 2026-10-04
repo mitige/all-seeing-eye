@@ -322,6 +322,105 @@ fn sans_compilateur_erreur_claire_au_demarrage() {
     );
 }
 
+// ── Task 13 : batterie embarquée cpool_day03 ─────────────────────
+
+/// Fixture sans batterie config (config vide) : `--battery
+/// cpool_day03` tombera sur l'embarquée.
+fn fixture_sans_batterie() -> Fixture {
+    Fixture {
+        config: TempDir::new().unwrap(),
+        data: TempDir::new().unwrap(),
+        rendu: TempDir::new().unwrap(),
+    }
+}
+
+/// Copie les `.c` de `tests/fixtures/<fixture>` dans le rendu.
+fn copie_fixture_c(rendu: &Path, fixture: &str) {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures")
+        .join(fixture);
+    for entree in fs::read_dir(&src).unwrap() {
+        let entree = entree.unwrap();
+        fs::copy(entree.path(), rendu.join(entree.file_name())).unwrap();
+    }
+}
+
+#[test]
+fn list_affiche_la_batterie_embarquee() {
+    let f = fixture_sans_batterie();
+    let out = f.commande().arg("list").output().unwrap();
+    let stdout = stdout(&out);
+    assert!(out.status.success(), "list KO : {}", stderr(&out));
+    assert!(
+        stdout.contains("cpool_day03"),
+        "batterie embarquée absente\n{stdout}"
+    );
+    assert!(
+        stdout.contains("8 tâches"),
+        "description courte absente\n{stdout}"
+    );
+    assert!(
+        stdout.contains("embarquée"),
+        "origine embarquée absente\n{stdout}"
+    );
+}
+
+#[test]
+fn batterie_embarquee_fixture_ok_exit_0() {
+    let f = fixture_sans_batterie();
+    copie_fixture_c(f.rendu.path(), "day03_solution_ok");
+    let out = f
+        .commande()
+        .args(["--no-tui", "--battery", "cpool_day03"])
+        .output()
+        .unwrap();
+    let stdout = stdout(&out);
+    assert!(
+        out.status.success(),
+        "exit attendu 0, reçu {}\nstdout:\n{stdout}\nstderr:\n{}",
+        out.status,
+        stderr(&out)
+    );
+    assert!(
+        stdout.contains("SCORE GLOBAL : 100.0%"),
+        "score 100.0 attendu\n{stdout}"
+    );
+    assert!(
+        stdout.contains("✓ my_print_combn"),
+        "task combn absente\n{stdout}"
+    );
+}
+
+#[test]
+fn batterie_embarquee_fixture_ko_exit_1_avec_failed() {
+    let f = fixture_sans_batterie();
+    copie_fixture_c(f.rendu.path(), "day03_solution_ko");
+    let out = f
+        .commande()
+        .args(["--no-tui", "--battery", "cpool_day03"])
+        .output()
+        .unwrap();
+    let stdout = stdout(&out);
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "exit attendu 1\nstdout:\n{stdout}\nstderr:\n{}",
+        stderr(&out)
+    );
+    assert!(
+        stdout.contains("✗ my_print_alpha"),
+        "my_print_alpha failed attendu\n{stdout}"
+    );
+    assert!(
+        stdout.contains("✗ my_put_nbr"),
+        "my_put_nbr failed attendu\n{stdout}"
+    );
+    assert!(
+        stdout.contains("SCORE GLOBAL : 75.0%"),
+        "score 75.0 (6/8) attendu\n{stdout}"
+    );
+}
+
 #[test]
 fn list_aplatit_les_erreurs_toml_multilignes() {
     let f = Fixture::avec_batterie(DELIVERY_OK);
@@ -336,10 +435,11 @@ fn list_aplatit_les_erreurs_toml_multilignes() {
     let stdout = stdout(&out);
     assert!(out.status.success(), "list KO : {}", stderr(&out));
     let lignes: Vec<&str> = stdout.lines().collect();
+    // cassee + e2e_cli (config) + cpool_day03 (embarquée, Task 13).
     assert_eq!(
         lignes.len(),
-        2,
-        "une ligne par batterie attendue (cassee + e2e_cli)\n{stdout}"
+        3,
+        "une ligne par batterie attendue (cassee + e2e_cli + embarquée)\n{stdout}"
     );
     let cassee = lignes
         .iter()

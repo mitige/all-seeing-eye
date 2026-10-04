@@ -3,15 +3,18 @@
 pub mod model;
 
 use anyhow::{bail, ensure, Context, Result};
+use include_dir::{include_dir, Dir};
 use model::{FunctionalTest, ProjectMeta, ProjectType, Prototype, Task};
 use serde::Deserialize;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
+use tempfile::TempDir;
 
 /// Une batterie complète : métadonnées projet + exercices/tests,
 /// racinée dans `root` (dossier contenant le TOML).
 #[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)] // ok avec `root` en skip : absent du TOML
+#[serde(deny_unknown_fields)] // ok avec `root`/`tempdir` en skip : absents du TOML
 pub struct Battery {
     pub project: ProjectMeta,
     #[serde(default)]
@@ -22,6 +25,14 @@ pub struct Battery {
     pub functional_test: Vec<FunctionalTest>,
     #[serde(skip)]
     pub root: PathBuf,
+    /// Garde le TempDir d'extraction vivant pour une batterie
+    /// embarquée ([`load_embedded`]) : `root` pointe DEDANS, il doit
+    /// vivre aussi longtemps que la batterie. `Arc` parce que
+    /// Battery est `Clone` (le CLI la clone dans le thread pipeline) :
+    /// le dossier est supprimé au drop du dernier clone. `None` pour
+    /// une batterie lue depuis le disque.
+    #[serde(skip)]
+    tempdir: Option<Arc<TempDir>>,
 }
 
 impl Battery {
@@ -85,11 +96,25 @@ impl Battery {
             }
         }
 
-        // 3. Batteries embarquées — Task 13 ajoutera cpool_day03 :
-        //    le TOML + ses assets seront extraits dans un tempfile::TempDir
-        //    pour que `root` puisse être résolu sur disque, puis matchées
-        //    sur `dir_name` ici.
-        let _ = embedded_batteries();
+        // 3. Batteries embarquées : même règle de match
+        //    (`project.name` == nom du dossier). Le TOML est sondé en
+        //    mémoire pour le nom ; l'extraction sur disque
+        //    ([`load_embedded`]) n'a lieu qu'en cas de match — le
+        //    `root` doit être un vrai dossier (harness, expected), la
+        //    batterie retournée détient le TempDir d'extraction.
+        for (nom, contenu) in embedded_batteries() {
+            match toml::from_str::<Battery>(contenu) {
+                Ok(sonde) if sonde.project.name == dir_name => match load_embedded(nom) {
+                    // Ok(None) : inatteignable — `nom` vient
+                    // d'embedded_batteries, le TOML existe forcément.
+                    Ok(Some(b)) => return Ok(b),
+                    Ok(None) => {}
+                    Err(err) => invalides.push((pseudo_chemin_embarquee(nom), err)),
+                },
+                Ok(_) => {}
+                Err(err) => invalides.push((pseudo_chemin_embarquee(nom), err.into())),
+            }
+        }
 
         let detail_invalides = if invalides.is_empty() {
             String::new()
@@ -229,13 +254,98 @@ fn expected_stdout(
     bail!("« {} » : ni `stdout` ni `stdout_file` fourni", name)
 }
 
-/// Batteries embarquées dans le binaire : `(nom, contenu TOML)`.
-///
-/// Task 13 ajoutera cpool_day03 (via `include_str!` des fichiers de
-/// `batteries/`). Vide pour l'instant — aucun `include_str!` ne doit
-/// pointer vers un fichier inexistant. Publique pour le CLI
-/// (Task 12 : `list` et `--battery <nom>`).
+/// Le dossier `batteries/` du manifest, embarqué dans le binaire :
+/// TOML à la racine + dossiers d'assets (`<nom>/harness/`,
+/// `<nom>/expected/`…). Accessible sans installation sur disque.
+static EMBEDDED: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/batteries");
+
+/// Batteries embarquées dans le binaire : `(nom, contenu TOML)` pour
+/// chaque `*.toml` à la racine de `batteries/`, triées par nom.
+/// Publique pour le CLI (`list` et `--battery <nom>`).
 pub fn embedded_batteries() -> Vec<(&'static str, &'static str)> {
-    // Task 13 ajoutera cpool_day03
-    Vec::new()
+    let mut out: Vec<(&'static str, &'static str)> = EMBEDDED
+        .files()
+        .filter(|f| f.path().extension().and_then(|e| e.to_str()) == Some("toml"))
+        .filter_map(|f| {
+            let nom = f.path().file_stem()?.to_str()?;
+            let contenu = f.contents_utf8()?;
+            Some((nom, contenu))
+        })
+        .collect();
+    out.sort();
+    out
+}
+
+/// Rejette un « nom » de batterie qui serait un chemin : un nom
+/// embarqué ne doit jamais être résolu hors du contenu embarqué.
+fn ensure_nom_simple(name: &str) -> Result<()> {
+    ensure!(
+        !name.is_empty() && name != "." && name != ".." && !name.contains(['/', '\\']),
+        "nom de batterie invalide : « {name} » (un nom de fichier, pas un chemin)"
+    );
+    Ok(())
+}
+
+/// Pseudo-chemin d'une batterie embarquée, pour les messages
+/// d'erreur (liste des invalides de [`Battery::discover`]).
+fn pseudo_chemin_embarquee(nom: &str) -> PathBuf {
+    PathBuf::from(format!("<embarquée:{nom}>"))
+}
+
+/// Extrait la batterie embarquée `name` — le TOML `<name>.toml` et
+/// l'éventuel dossier d'assets `<name>/` — dans un TempDir neuf, et
+/// renvoie ce TempDir (le TOML extrait est `<tempdir>/<name>.toml`).
+/// Ok(None) si `name` n'est pas une batterie embarquée. `name` est un
+/// NOM, jamais un chemin.
+pub fn extract_embedded(name: &str) -> Result<Option<TempDir>> {
+    ensure_nom_simple(name)?;
+    let Some(toml) = EMBEDDED.get_file(format!("{name}.toml")) else {
+        return Ok(None);
+    };
+    let tmp = tempfile::tempdir().context("création du tempdir d'extraction impossible")?;
+    let dest_toml = tmp.path().join(format!("{name}.toml"));
+    fs::write(&dest_toml, toml.contents())
+        .with_context(|| format!("extraction de {} impossible", dest_toml.display()))?;
+    if let Some(assets) = EMBEDDED.get_dir(name) {
+        write_embedded_dir(assets, &tmp.path().join(name))?;
+    }
+    Ok(Some(tmp))
+}
+
+/// Recopie un dossier embarqué (fichiers + sous-dossiers) dans
+/// `dest`. Le contenu est fixé à la compilation : la récursion est
+/// bornée par la profondeur réelle de `batteries/`.
+fn write_embedded_dir(dir: &Dir<'_>, dest: &Path) -> Result<()> {
+    fs::create_dir_all(dest)
+        .with_context(|| format!("création de {} impossible", dest.display()))?;
+    for f in dir.files() {
+        let Some(nom) = f.path().file_name() else {
+            continue;
+        };
+        let d = dest.join(nom);
+        fs::write(&d, f.contents())
+            .with_context(|| format!("extraction de {} impossible", d.display()))?;
+    }
+    for sous in dir.dirs() {
+        let Some(nom) = sous.path().file_name() else {
+            continue;
+        };
+        write_embedded_dir(sous, &dest.join(nom))?;
+    }
+    Ok(())
+}
+
+/// Charge la batterie embarquée `name` : extraction dans un TempDir
+/// ([`extract_embedded`]) puis [`Battery::load`] du TOML extrait. La
+/// batterie retournée DÉTIENT le TempDir (`root` pointe dedans) : il
+/// vit aussi longtemps qu'elle et ses clones. Ok(None) si `name`
+/// n'est pas une batterie embarquée.
+pub fn load_embedded(name: &str) -> Result<Option<Battery>> {
+    let Some(tmp) = extract_embedded(name)? else {
+        return Ok(None);
+    };
+    let path = tmp.path().join(format!("{name}.toml"));
+    let mut b = Battery::load(&path)?;
+    b.tempdir = Some(Arc::new(tmp));
+    Ok(Some(b))
 }

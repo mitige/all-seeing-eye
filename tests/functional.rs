@@ -13,7 +13,6 @@
 
 mod common;
 
-use all_seeing_eye::battery::model::{ProjectMeta, ProjectType};
 use all_seeing_eye::battery::Battery;
 use all_seeing_eye::engine::events::{Event, Step, TestVerdict};
 use all_seeing_eye::engine::{build, functional, BuildArtifacts, PipelineContext};
@@ -1199,23 +1198,12 @@ fn run_one_stderr_non_vide_et_exit_non_zero_conformes_passed() {
 #[test]
 fn functions_sans_task_etape_desactivee() {
     // Inatteignable via Battery::load (la validation exige au moins
-    // une task) : batterie construite à la main pour couvrir la
-    // branche défensive.
-    let battery = Battery {
-        project: ProjectMeta {
-            name: "vide".to_string(),
-            kind: ProjectType::Functions,
-            binary: None,
-            makefile_rules: Vec::new(),
-            cflags: Vec::new(),
-            allowed_functions: Vec::new(),
-            tests_run_rule: false,
-        },
-        prototype: Vec::new(),
-        task: Vec::new(),
-        functional_test: Vec::new(),
-        root: PathBuf::new(),
-    };
+    // une task) : batterie désérialisée directement (sans validate)
+    // pour couvrir la branche défensive — Task 13 : Battery a un
+    // champ privé (tempdir d'extraction), le struct literal ne
+    // compile plus hors du crate.
+    let battery: Battery =
+        toml::from_str("[project]\nname = \"vide\"\ntype = \"functions\"\n").unwrap();
     let target = TempDir::new().unwrap();
     let mut ctx = common::test_ctx(&battery, target.path());
     let (tx, rx) = mpsc::channel();

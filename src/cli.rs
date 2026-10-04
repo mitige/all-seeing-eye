@@ -327,9 +327,10 @@ fn exit_code(report: &Report) -> i32 {
 }
 
 /// `--battery <nom>` : `~/.config/all-seeing-eye/batteries/<nom>.toml`
-/// d'abord, les embarquées ensuite (Task 13 — la fonction est vide
-/// pour l'instant). Introuvable → erreur listant les batteries
-/// connues.
+/// d'abord, les embarquées ensuite ([`battery::load_embedded`] :
+/// extraction dans un TempDir détenu par la batterie — le `root`
+/// doit exister en vrai pour les harness/expected). Introuvable →
+/// erreur listant les batteries connues.
 fn batterie_nommee(nom: &str) -> Result<Battery> {
     // Un NOM, pas un chemin : on ne lit jamais ailleurs que dans le
     // dossier batteries de la config.
@@ -346,14 +347,10 @@ fn batterie_nommee(nom: &str) -> Result<Battery> {
             return Battery::load(&path);
         }
     }
-    // Embarquées : Task 13 branchera l'extraction sur disque (le
-    // `root` doit exister en vrai) — la source est vide pour
-    // l'instant, cette branche est donc encore morte.
-    if battery::embedded_batteries()
-        .iter()
-        .any(|(em_nom, _)| *em_nom == nom)
-    {
-        bail!("batterie embarquée « {nom} » : chargement branché en Task 13");
+    // Embarquées : extraction sur disque + chargement (le TempDir
+    // d'extraction est détenu par la batterie retournée).
+    if let Some(b) = battery::load_embedded(nom)? {
+        return Ok(b);
     }
     let connues = batteries_connues();
     let mut detail = String::from("batteries connues :");
@@ -413,7 +410,8 @@ fn description_illisible(message: String) -> String {
 /// Toutes les batteries connues :
 /// `~/.config/all-seeing-eye/batteries/*.toml` (triées par chemin ;
 /// les illisibles restent listées avec leur erreur — jamais
-/// silencieusement omises), puis les embarquées (Task 13).
+/// silencieusement omises), puis les embarquées
+/// ([`battery::embedded_batteries`]).
 fn batteries_connues() -> Vec<BatterieConnue> {
     let mut out = Vec::new();
     if let Some(config) = dirs::config_dir() {

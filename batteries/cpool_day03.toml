@@ -1,0 +1,114 @@
+# Batterie cpool_day03 — C Pool Day03 « Intro to Programming ».
+#
+# 8 exercices, un seul appel système autorisé côté étudiant :
+# my_putchar. L'étudiant ne rend NI son main NI son my_putchar.c :
+# chaque task est compilée avec le harness de la batterie
+# (harness/main_<task>.c + harness/my_putchar.c officiel), comme la
+# vraie moulinette qui ajoute SES main.c et my_putchar.c.
+#
+# cflags SANS -Werror, volontairement : la compile est jugée sur le C,
+# la norme par l'étape Norme. Sous epiclang, banana tourne à la
+# compile et ses diagnostics de style deviennent des erreurs avec
+# -Werror — dont la C-H1 (« function declaration in source file »),
+# structurellement inévitable ici : le sujet interdit de rendre
+# my_putchar.c, chaque delivery doit donc DÉCLARER
+# `void my_putchar(char c);`. La vraie moulinette ne bloque pas la
+# compile sur le style ; nous non plus.
+#
+# Sorties attendues : sortie BRUTE de la fonction, SANS newline final
+# (comportement historique Epitech — le sujet n'en demande pas). Les
+# harness n'ajoutent rien : pas de '\n', pas d'étiquette. Pour les
+# fonctions à paramètre, le main enchaîne plusieurs appels et la
+# sortie attendue est la concaténation brute :
+# - my_isneg(0) my_isneg(-21) my_isneg(21) → « PNP » ;
+# - my_put_nbr(0) my_put_nbr(42) my_put_nbr(INT_MIN) my_put_nbr(INT_MAX)
+#   → « 042-21474836482147483647 » ;
+# - my_print_combn(1) my_print_combn(2) my_print_combn(3) → les trois
+#   listes concaténées (« …8, 9 » + « 01, 02… » + « 012, 013… »).
+
+[project]
+name = "cpool_day03"
+type = "functions"
+allowed_functions = ["my_putchar"]
+tests_run_rule = false
+cflags = ["-Wall", "-Wextra"]
+
+[[task]]
+name = "my_print_alpha"
+delivery = "my_print_alpha.c"
+prototype = "int my_print_alpha(void)"
+harness = "cpool_day03/harness/main_my_print_alpha.c"
+extra_sources = ["cpool_day03/harness/my_putchar.c"]
+stdout_file = "cpool_day03/expected/my_print_alpha.out"
+exit_code = 0
+timeout_ms = 2000
+
+[[task]]
+name = "my_print_revalpha"
+delivery = "my_print_revalpha.c"
+prototype = "int my_print_revalpha(void)"
+harness = "cpool_day03/harness/main_my_print_revalpha.c"
+extra_sources = ["cpool_day03/harness/my_putchar.c"]
+stdout_file = "cpool_day03/expected/my_print_revalpha.out"
+exit_code = 0
+timeout_ms = 2000
+
+[[task]]
+name = "my_print_digits"
+delivery = "my_print_digits.c"
+prototype = "int my_print_digits(void)"
+harness = "cpool_day03/harness/main_my_print_digits.c"
+extra_sources = ["cpool_day03/harness/my_putchar.c"]
+stdout_file = "cpool_day03/expected/my_print_digits.out"
+exit_code = 0
+timeout_ms = 2000
+
+[[task]]
+name = "my_isneg"
+delivery = "my_isneg.c"
+prototype = "int my_isneg(int n)"
+harness = "cpool_day03/harness/main_my_isneg.c"
+extra_sources = ["cpool_day03/harness/my_putchar.c"]
+stdout_file = "cpool_day03/expected/my_isneg.out"
+exit_code = 0
+timeout_ms = 2000
+
+[[task]]
+name = "my_print_comb"
+delivery = "my_print_comb.c"
+prototype = "int my_print_comb(void)"
+harness = "cpool_day03/harness/main_my_print_comb.c"
+extra_sources = ["cpool_day03/harness/my_putchar.c"]
+stdout_file = "cpool_day03/expected/my_print_comb.out"
+exit_code = 0
+timeout_ms = 2000
+
+[[task]]
+name = "my_print_comb2"
+delivery = "my_print_comb2.c"
+prototype = "int my_print_comb2(void)"
+harness = "cpool_day03/harness/main_my_print_comb2.c"
+extra_sources = ["cpool_day03/harness/my_putchar.c"]
+stdout_file = "cpool_day03/expected/my_print_comb2.out"
+exit_code = 0
+timeout_ms = 2000
+
+[[task]]
+name = "my_put_nbr"
+delivery = "my_put_nbr.c"
+prototype = "int my_put_nbr(int nb)"
+harness = "cpool_day03/harness/main_my_put_nbr.c"
+extra_sources = ["cpool_day03/harness/my_putchar.c"]
+stdout_file = "cpool_day03/expected/my_put_nbr.out"
+exit_code = 0
+timeout_ms = 2000
+
+[[task]]
+name = "my_print_combn"
+delivery = "my_print_combn.c"
+prototype = "int my_print_combn(int n)"
+harness = "cpool_day03/harness/main_my_print_combn.c"
+extra_sources = ["cpool_day03/harness/my_putchar.c"]
+stdout_file = "cpool_day03/expected/my_print_combn.out"
+exit_code = 0
+timeout_ms = 2000
