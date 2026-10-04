@@ -24,7 +24,9 @@ pub mod prelim;
 /// Publique pour permettre aux tests d'intégration de piloter l'étape
 /// isolément (PipelineContext construit à la main).
 pub mod symbols;
-mod unit;
+/// Publique pour permettre aux tests d'intégration de piloter l'étape
+/// isolément (PipelineContext construit à la main).
+pub mod unit;
 mod verdict;
 
 use crate::battery::Battery;

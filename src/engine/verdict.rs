@@ -39,9 +39,8 @@ pub fn run(ctx: &mut PipelineContext, tx: &mpsc::Sender<Event>) {
 /// Convertit un [`TestVerdict`] en [`TestRecord`] : libellé canonique
 /// ("passed"|"failed"|"crashed"|"timeout"), diff extrait pour Failed.
 ///
-/// Sera appelé par les étapes unit/functional pour alimenter
-/// `ctx.tests` (câblage en Tasks 8-9).
-#[allow(dead_code)] // pas encore de producteur de TestVerdict
+/// Appelé par les étapes unit (Task 8) et functional (Task 9) pour
+/// alimenter `ctx.tests`.
 pub(crate) fn test_record(group: &str, name: &str, verdict: &TestVerdict) -> TestRecord {
     let (label, diff) = match verdict {
         TestVerdict::Passed => ("passed", None),

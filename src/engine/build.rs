@@ -193,7 +193,8 @@ fn copy_dir_capped(src: &Path, dst: &Path, max_depth: usize, max_bytes: u64) -> 
 }
 
 /// Statut d'exécution en clair, pour le détail d'un KO.
-fn describe_status(status: ExecStatus) -> String {
+/// Partagé avec unit.rs (Task 8 : KO de `make tests_run`).
+pub(crate) fn describe_status(status: ExecStatus) -> String {
     match status {
         ExecStatus::Exit(code) => format!("exit {code}"),
         ExecStatus::Signal(sig) => format!("signal {sig}"),
