@@ -148,11 +148,13 @@ fn pipeline_emet_7_step_started_dans_l_ordre_puis_run_finished() {
             Event::StepStarted { .. } | Event::StepFinished { .. } | Event::RunFinished { .. } => {}
             // Task 5 : l'étape Build peut relayer des LogLine de
             // sous-processus ; Task 9 : Functional aussi (compile du
-            // harness — silencieuse ici).
+            // harness — silencieuse ici). Task 10 : Verdict relaie
+            // une erreur de sauvegarde du rapport (best-effort) —
+            // silencieuse ici, le data dir de la machine est inscriptible.
             Event::LogLine { step, .. } => {
                 assert!(
-                    matches!(step, Step::Build | Step::Functional),
-                    "LogLine hors Build/Functional : {e:?}"
+                    matches!(step, Step::Build | Step::Functional | Step::Verdict),
+                    "LogLine hors Build/Functional/Verdict : {e:?}"
                 );
             }
             // Task 9 : l'étape Functional exécute réellement la task
@@ -248,4 +250,40 @@ fn pipeline_emet_7_step_started_dans_l_ordre_puis_run_finished() {
         ]
     );
     assert!(report.duration_secs.is_finite());
+
+    // Task 10 : scores cohérents — la task ex01 passe : groupe
+    // "functional" 1/1 = 100.0 ; pas de tests_run_rule → "unit" non
+    // attendu. Global = moyenne simple des groupes = 100.0.
+    assert_eq!(
+        report.scores.par_groupe,
+        vec![("functional".to_string(), 100.0)],
+        "par_groupe inattendu : {:?}",
+        report.scores.par_groupe
+    );
+    assert_eq!(report.scores.global, 100.0);
+    // Les comptes norme du score reflètent exactement les fautes
+    // collectées (leur nombre dépend du moteur : banana voit aussi la
+    // C-H1 du prototype, l'interne non).
+    let total_norme = report.scores.norme_fatal
+        + report.scores.norme_major
+        + report.scores.norme_minor
+        + report.scores.norme_info;
+    assert_eq!(
+        total_norme as usize,
+        report.norme.len(),
+        "comptes norme incohérents : {:?} vs {} fautes",
+        report.scores,
+        report.norme.len()
+    );
+    // Le résumé du verdict porte le score global.
+    let verdict = report
+        .steps
+        .iter()
+        .find(|s| s.step == "verdict")
+        .expect("étape verdict présente");
+    assert!(
+        verdict.summary.contains("score global: 100.0%"),
+        "résumé verdict inattendu : {:?}",
+        verdict.summary
+    );
 }

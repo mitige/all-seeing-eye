@@ -42,6 +42,22 @@ impl Step {
             Step::Verdict => "verdict",
         }
     }
+
+    /// Inverse de [`Step::name`] : retrouve l'étape d'un
+    /// `StepReport.step` sérialisé (rendu du rapport). None si le nom
+    /// ne correspond à aucune étape connue.
+    pub fn from_name(name: &str) -> Option<Step> {
+        Some(match name {
+            "prelim" => Step::Prelim,
+            "build" => Step::Build,
+            "norme" => Step::Norme,
+            "symbols" => Step::Symbols,
+            "unit" => Step::Unit,
+            "functional" => Step::Functional,
+            "verdict" => Step::Verdict,
+            _ => return None,
+        })
+    }
 }
 
 /// Verdict d'un test unitaire ou fonctionnel.
