@@ -16,10 +16,10 @@
 
 mod common;
 
-use seeyou::battery::Battery;
-use seeyou::engine::events::{Event, Step, TestVerdict};
-use seeyou::engine::{unit, BuildArtifacts, PipelineContext};
-use seeyou::report::compute_scores;
+use all_seeing_eye::battery::Battery;
+use all_seeing_eye::engine::events::{Event, Step, TestVerdict};
+use all_seeing_eye::engine::{unit, BuildArtifacts, PipelineContext};
+use all_seeing_eye::report::compute_scores;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};

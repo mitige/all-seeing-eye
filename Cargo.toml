@@ -1,8 +1,8 @@
 [package]
-name = "seeyou"
+name = "all-seeing-eye"
 version = "0.1.0"
 edition = "2021"
-description = "I see everything — moulinette Epitech 2026-2027, en local"
+description = "All-Seeing Eye — moulinette Epitech 2026-2027, en local"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }

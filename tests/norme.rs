@@ -4,10 +4,10 @@
 
 mod common;
 
-use seeyou::battery::Battery;
-use seeyou::engine::events::{Event, Step};
-use seeyou::engine::{norme, prelim};
-use seeyou::norme::Severity;
+use all_seeing_eye::battery::Battery;
+use all_seeing_eye::engine::events::{Event, Step};
+use all_seeing_eye::engine::{norme, prelim};
+use all_seeing_eye::norme::Severity;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Mutex};
@@ -119,7 +119,7 @@ fn prelim_checks_atterrissent_dans_step_report() {
 // ----------------------------------------------------------------
 
 /// Exécute l'étape norme isolée et collecte les événements.
-fn run_norme(ctx: &mut seeyou::engine::PipelineContext) -> (bool, Vec<Event>) {
+fn run_norme(ctx: &mut all_seeing_eye::engine::PipelineContext) -> (bool, Vec<Event>) {
     let (tx, rx) = mpsc::channel();
     let ok = norme::run(ctx, &tx);
     drop(tx);
@@ -128,7 +128,7 @@ fn run_norme(ctx: &mut seeyou::engine::PipelineContext) -> (bool, Vec<Event>) {
 }
 
 /// Extrait les fautes norme du flux d'événements.
-fn norme_faults_events(events: &[Event]) -> Vec<&seeyou::norme::NormeFault> {
+fn norme_faults_events(events: &[Event]) -> Vec<&all_seeing_eye::norme::NormeFault> {
     events
         .iter()
         .filter_map(|e| match e {
@@ -156,7 +156,7 @@ fn step_finished(events: &[Event]) -> Option<(bool, String)> {
 /// gravité décroissant, chaque compte égal au nombre de fautes de
 /// cette sévérité, et toutes les fautes couvertes. Ne dépend pas des
 /// comptes exacts produits par une version donnée de banana.
-fn assert_summary_coherent(summary: &str, faults: &[seeyou::norme::NormeFault]) {
+fn assert_summary_coherent(summary: &str, faults: &[all_seeing_eye::norme::NormeFault]) {
     let severite = |label: &str| match label {
         "fatal" => Some(Severity::Fatal),
         "major" => Some(Severity::Major),
@@ -353,7 +353,7 @@ fn probe_epiclang_timeout_borne() {
     let _path = PathGuard::set(dir.path()); // ne résout que le faux epiclang
 
     let t = std::time::Instant::now();
-    let _ = seeyou::norme::official::epiclang_available();
+    let _ = all_seeing_eye::norme::official::epiclang_available();
     assert!(
         t.elapsed() < std::time::Duration::from_secs(10),
         "probe sans timeout : {:?} (borne 5 s attendue)",
@@ -367,7 +367,7 @@ fn probe_epiclang_timeout_borne() {
 
 #[test]
 fn interne_meme_fixture_sous_ensemble() {
-    use seeyou::norme::internal::{check_file, SourceKind};
+    use all_seeing_eye::norme::internal::{check_file, SourceKind};
     let content = fs::read_to_string(fixture("norme_ko").join("dirty.c")).unwrap();
     let f = check_file(Path::new("dirty.c"), &content, SourceKind::C);
     let attend = [

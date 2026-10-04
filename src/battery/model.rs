@@ -1,4 +1,4 @@
-//! Types du schéma TOML d'une batterie seeyou.
+//! Types du schéma TOML d'une batterie all-seeing-eye.
 //!
 //! Ces types sont finaux : tout le reste du crate (runner, TUI, rapports)
 //! les consomme tels quels.

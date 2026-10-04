@@ -13,11 +13,11 @@
 
 mod common;
 
-use seeyou::battery::model::{ProjectMeta, ProjectType};
-use seeyou::battery::Battery;
-use seeyou::engine::events::{Event, Step, TestVerdict};
-use seeyou::engine::{build, functional, BuildArtifacts, PipelineContext};
-use seeyou::exec::{ExecStatus, MAX_CAPTURE_BYTES};
+use all_seeing_eye::battery::model::{ProjectMeta, ProjectType};
+use all_seeing_eye::battery::Battery;
+use all_seeing_eye::engine::events::{Event, Step, TestVerdict};
+use all_seeing_eye::engine::{build, functional, BuildArtifacts, PipelineContext};
+use all_seeing_eye::exec::{ExecStatus, MAX_CAPTURE_BYTES};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;

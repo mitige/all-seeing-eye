@@ -1,7 +1,7 @@
 //! Exécution de sous-processus : capture bornée, timeout, limites de
 //! ressources. Promesse : jamais bloquer, jamais fuiter.
 //!
-//! Brique de base de tout le pipeline seeyou (build, norme, tests) :
+//! Brique de base de tout le pipeline all-seeing-eye (build, norme, tests) :
 //! - le fils tourne dans sa propre session / groupe de processus
 //!   (`setsid`) : au timeout, `SIGSTOP` puis `SIGKILL` sont envoyés à
 //!   tout le groupe — un processus stoppé ne peut plus forker, donc

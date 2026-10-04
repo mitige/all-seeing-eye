@@ -157,12 +157,12 @@ const POINTS_MIN: usize = 3;
 const DETAIL_MAX: usize = 40;
 
 /// Écrit le rapport : JSON pretty dans
-/// `dirs::data_dir()/seeyou/last.json`, rendu texte dans `last.txt`.
+/// `dirs::data_dir()/all-seeing-eye/last.json`, rendu texte dans `last.txt`.
 /// Crée le dossier au besoin.
 pub fn save(report: &Report) -> Result<()> {
     let dir = dirs::data_dir()
         .context("aucun data dir (ni XDG_DATA_HOME ni HOME)")?
-        .join("seeyou");
+        .join("all-seeing-eye");
     fs::create_dir_all(&dir)
         .with_context(|| format!("création de {} impossible", dir.display()))?;
     let json = serde_json::to_string_pretty(report).context("sérialisation JSON du rapport")?;
@@ -186,7 +186,7 @@ pub fn render_text_at(report: &Report, at: SystemTime) -> String {
     let mut out = String::new();
     let _ = writeln!(
         out,
-        "═══ SEEYOU ═══ {} ═══ {} ═══",
+        "═══ ALL-SEEING EYE ═══ {} ═══ {} ═══",
         report.project,
         horodatage(at)
     );

@@ -1,7 +1,7 @@
 //! Tests du modèle de batterie TOML (Task 1).
 
-use seeyou::battery::model::ProjectType;
-use seeyou::battery::Battery;
+use all_seeing_eye::battery::model::ProjectType;
+use all_seeing_eye::battery::Battery;
 use std::fs;
 use std::path::PathBuf;
 use tempfile::TempDir;
@@ -17,10 +17,10 @@ fn xdg_config(path: &std::path::Path) -> XdgGuard {
     XdgGuard::set("XDG_CONFIG_HOME", path)
 }
 
-/// Crée `<config>/.config/seeyou/batteries`, y écrit `files`
+/// Crée `<config>/.config/all-seeing-eye/batteries`, y écrit `files`
 /// (nom → contenu) et renvoie le chemin du dossier `batteries`.
 fn setup_config_batteries(config: &TempDir, files: &[(&str, &str)]) -> PathBuf {
-    let batteries = config.path().join(".config/seeyou/batteries");
+    let batteries = config.path().join(".config/all-seeing-eye/batteries");
     fs::create_dir_all(&batteries).unwrap();
     for (nom, contenu) in files {
         fs::write(batteries.join(nom), contenu).unwrap();
@@ -464,7 +464,7 @@ fn discover_trouve_le_moulinette_toml_local() {
 #[test]
 fn discover_erreur_si_aucune_batterie() {
     let _lock = XDG_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
-    // Config vide (pas de .config/seeyou/batteries) : env hermétique,
+    // Config vide (pas de .config/all-seeing-eye/batteries) : env hermétique,
     // indépendante de la machine hôte.
     let config = TempDir::new().unwrap();
     let _xdg = xdg_config(&config.path().join(".config"));

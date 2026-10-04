@@ -1,8 +1,8 @@
 //! Tests du rapport final : scores, rendu texte (golden), export
 //! JSON/TXT (Task 10).
 
-use seeyou::norme::{NormeFault, Severity};
-use seeyou::report::{
+use all_seeing_eye::norme::{NormeFault, Severity};
+use all_seeing_eye::report::{
     compute_scores, render_text, render_text_at, save, Report, Scores, StepReport, TestRecord,
 };
 use std::path::PathBuf;
@@ -115,7 +115,7 @@ const INSTANT_GOLDEN: u64 = 1_791_070_920;
 /// calage (champ étape = label + espace + points = 31 caractères, 3
 /// points minimum ; champ test = nom + espace + points = 18), icônes
 /// ✗/💥, détail court entre parenthèses, score au dixième.
-const GOLDEN: &str = r#"═══ SEEYOU ═══ mini_ls ═══ 2026-10-03 23:42 ═══
+const GOLDEN: &str = r#"═══ ALL-SEEING EYE ═══ mini_ls ═══ 2026-10-03 23:42 ═══
 ▸ Vérifications préliminaires ... OK
 ▸ Compilation ................... OK
 ▸ Norme ......................... 3 major, 12 minor
@@ -138,7 +138,7 @@ fn render_text_at_epoch_zero() {
     // Conversion civil-from-days : l'epoch est le point fixe.
     let rendu = render_text_at(&report_golden(), SystemTime::UNIX_EPOCH);
     assert!(
-        rendu.starts_with("═══ SEEYOU ═══ mini_ls ═══ 1970-01-01 00:00 ═══\n"),
+        rendu.starts_with("═══ ALL-SEEING EYE ═══ mini_ls ═══ 1970-01-01 00:00 ═══\n"),
         "en-tête inattendu : {:?}",
         rendu.lines().next()
     );
@@ -150,7 +150,7 @@ fn render_text_utilise_l_heure_courante() {
     // run, pas l'epoch — et le score reste au dixième.
     let rendu = render_text(&report_golden());
     assert!(
-        rendu.starts_with("═══ SEEYOU ═══ mini_ls ═══ "),
+        rendu.starts_with("═══ ALL-SEEING EYE ═══ mini_ls ═══ "),
         "en-tête inattendu : {:?}",
         rendu.lines().next()
     );
@@ -436,7 +436,7 @@ fn save_ecrit_last_json_et_last_txt() {
     report.project = "json_txt".to_string();
     save(&report).unwrap();
 
-    let dir = data.path().join("seeyou");
+    let dir = data.path().join("all-seeing-eye");
     let json = std::fs::read_to_string(dir.join("last.json")).unwrap();
     let relu: Report = serde_json::from_str(&json).unwrap();
     assert_eq!(relu.project, "json_txt");
@@ -453,7 +453,7 @@ fn save_ecrit_last_json_et_last_txt() {
 
     let txt = std::fs::read_to_string(dir.join("last.txt")).unwrap();
     assert!(
-        txt.starts_with("═══ SEEYOU ═══ json_txt ═══ "),
+        txt.starts_with("═══ ALL-SEEING EYE ═══ json_txt ═══ "),
         "en-tête txt inattendu : {:?}",
         txt.lines().next()
     );

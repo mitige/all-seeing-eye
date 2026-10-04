@@ -12,9 +12,9 @@
 
 mod common;
 
-use seeyou::battery::Battery;
-use seeyou::engine::events::{Event, Step};
-use seeyou::engine::{symbols, BuildArtifacts, PipelineContext};
+use all_seeing_eye::battery::Battery;
+use all_seeing_eye::engine::events::{Event, Step};
+use all_seeing_eye::engine::{symbols, BuildArtifacts, PipelineContext};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;

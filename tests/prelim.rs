@@ -4,9 +4,9 @@
 
 mod common;
 
-use seeyou::battery::Battery;
-use seeyou::engine::events::{Event, Step};
-use seeyou::engine::prelim;
+use all_seeing_eye::battery::Battery;
+use all_seeing_eye::engine::events::{Event, Step};
+use all_seeing_eye::engine::prelim;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};

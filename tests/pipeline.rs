@@ -1,8 +1,8 @@
 //! Tests du pipeline orchestrateur (Task 3).
 
-use seeyou::battery::Battery;
-use seeyou::engine::events::{Event, Step};
-use seeyou::engine::{run_pipeline, RunOpts};
+use all_seeing_eye::battery::Battery;
+use all_seeing_eye::engine::events::{Event, Step};
+use all_seeing_eye::engine::{run_pipeline, RunOpts};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::mpsc;
@@ -16,7 +16,7 @@ use common::{XdgGuard, XDG_MUTEX};
 /// appellent `run_pipeline`, → verdict → `report::save`, se
 /// sérialisent sur [`XDG_MUTEX`]) et le restaure à sa valeur initiale
 /// au drop — un `cargo test` ne doit JAMAIS écraser le
-/// `~/.local/share/seeyou/last.{json,txt}` de l'utilisateur.
+/// `~/.local/share/all-seeing-eye/last.{json,txt}` de l'utilisateur.
 fn xdg_data(path: &std::path::Path) -> XdgGuard {
     XdgGuard::set("XDG_DATA_HOME", path)
 }
@@ -187,7 +187,7 @@ fn pipeline_emet_7_step_started_dans_l_ordre_puis_run_finished() {
             } => {
                 assert_eq!((group.as_str(), name.as_str()), ("functional", "ex01"));
                 assert!(
-                    matches!(result, seeyou::engine::events::TestVerdict::Passed),
+                    matches!(result, all_seeing_eye::engine::events::TestVerdict::Passed),
                     "ex01 attendu Passed : {e:?}"
                 );
             }
@@ -308,11 +308,11 @@ fn pipeline_emet_7_step_started_dans_l_ordre_puis_run_finished() {
     // La sauvegarde du verdict a écrit dans le data dir ISOLÉ, jamais
     // dans celui de l'utilisateur.
     assert!(
-        data.path().join("seeyou/last.json").is_file(),
+        data.path().join("all-seeing-eye/last.json").is_file(),
         "last.json attendu dans le data dir isolé"
     );
     assert!(
-        data.path().join("seeyou/last.txt").is_file(),
+        data.path().join("all-seeing-eye/last.txt").is_file(),
         "last.txt attendu dans le data dir isolé"
     );
 }
@@ -460,7 +460,7 @@ fn pipeline_non_verbose_vert_synthetise_les_records_unit() {
 #[test]
 fn pipeline_survit_a_un_echec_de_sauvegarde_du_rapport() {
     // Branche save-en-échec du verdict : `XDG_DATA_HOME` pointe vers
-    // un FICHIER régulier → create_dir_all(fichier/seeyou) échoue
+    // un FICHIER régulier → create_dir_all(fichier/all-seeing-eye) échoue
     // (NotADirectory) → save() KO. La sauvegarde est best-effort : le
     // run survit, le rapport est quand même retourné ET émis, et
     // l'erreur est relayée en LogLine Step::Verdict.

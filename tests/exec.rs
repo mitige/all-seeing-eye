@@ -3,7 +3,7 @@
 //! garantie « jamais bloquer, jamais fuiter » (descendants `setsid`
 //! inclus).
 
-use seeyou::exec::{run_capture, ExecOutcome, ExecStatus, Limits, MAX_CAPTURE_BYTES};
+use all_seeing_eye::exec::{run_capture, ExecOutcome, ExecStatus, Limits, MAX_CAPTURE_BYTES};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -110,12 +110,12 @@ fn timeout_tue_aussi_les_descendants() {
     // laisse assez de marge au-dessus de l'ambiant système.
     // Témoin : les deux cobayes taggés doivent exister pendant le run
     // (état stable : sh a exec'd le second, le subshell le premier).
-    let temoin = temoin_pendant("seeyou_test_tag", 2, Duration::from_millis(280));
+    let temoin = temoin_pendant("all_seeing_eye_test_tag", 2, Duration::from_millis(280));
     let out = run(
         "sh",
         &[
             "-c",
-            "exec -a seeyou_test_tag sleep 30 & exec -a seeyou_test_tag sleep 30",
+            "exec -a all_seeing_eye_test_tag sleep 30 & exec -a all_seeing_eye_test_tag sleep 30",
         ],
         "",
         Duration::from_millis(300),
@@ -130,7 +130,7 @@ fn timeout_tue_aussi_les_descendants() {
     // asynchrone : courte fenêtre de tolérance avant le verdict.
     let mut survivants = 1;
     for _ in 0..20 {
-        survivants = pgrep_compte("seeyou_test_tag");
+        survivants = pgrep_compte("all_seeing_eye_test_tag");
         if survivants == 0 {
             break;
         }
@@ -138,7 +138,7 @@ fn timeout_tue_aussi_les_descendants() {
     }
     assert_eq!(
         survivants, 0,
-        "des « seeyou_test_tag » survivent au timeout"
+        "des « all_seeing_eye_test_tag » survivent au timeout"
     );
 }
 
@@ -165,7 +165,7 @@ fn fils_qui_ne_lit_pas_stdin_gros_input_retour_propre() {
 #[test]
 fn binaire_inexistant_err_avec_contexte() {
     let err = run_capture(
-        Path::new("/n/existe/pas/seeyou_binaire_inexistant"),
+        Path::new("/n/existe/pas/all-seeing-eye_binaire_inexistant"),
         &[],
         "",
         &std::env::temp_dir(),
@@ -175,7 +175,7 @@ fn binaire_inexistant_err_avec_contexte() {
     .expect_err("un binaire inexistant doit produire une Err");
     let msg = format!("{err:#}");
     assert!(
-        msg.contains("/n/existe/pas/seeyou_binaire_inexistant"),
+        msg.contains("/n/existe/pas/all-seeing-eye_binaire_inexistant"),
         "le message doit nommer le programme : {msg}"
     );
 }
@@ -268,13 +268,13 @@ fn descendant_setsid_garde_stdout_retour_borne() {
     // Le descendant taggé fait setsid : il échappe au kill de groupe
     // (échappatoire documentée) et garde les pipes ouverts. Fork requis
     // : couvert par le défaut nproc (8192).
-    let temoin = temoin_pendant("seeyou_setsid_tag", 1, Duration::from_millis(280));
+    let temoin = temoin_pendant("all-seeing-eye_setsid_tag", 1, Duration::from_millis(280));
     let t0 = Instant::now();
     let out = run(
         "sh",
         &[
             "-c",
-            "setsid sh -c 'exec -a seeyou_setsid_tag sleep 6' & exec sleep 5",
+            "setsid sh -c 'exec -a all-seeing-eye_setsid_tag sleep 6' & exec sleep 5",
         ],
         "",
         Duration::from_millis(300),
@@ -293,7 +293,7 @@ fn descendant_setsid_garde_stdout_retour_borne() {
     // encore ouverts au retour — c'est exactement le cas qui faisait
     // pendre les joins avant le fix. (Il meurt tout seul à 6 s.)
     assert!(
-        pgrep_compte("seeyou_setsid_tag") >= 1,
+        pgrep_compte("all-seeing-eye_setsid_tag") >= 1,
         "le descendant setsid doit survivre au kill de groupe"
     );
 }
@@ -307,14 +307,14 @@ fn descendant_setsid_garde_stdout_retour_borne() {
 #[test]
 fn descendant_setsid_garde_stdin_retour_borne() {
     // Fork requis : couvert par le défaut nproc (8192).
-    let temoin = temoin_pendant("seeyou_stdin_tag", 1, Duration::from_millis(280));
+    let temoin = temoin_pendant("all-seeing-eye_stdin_tag", 1, Duration::from_millis(280));
     let input = "x".repeat(1024 * 1024); // > buffer du pipe : write bloque
     let t0 = Instant::now();
     let out = run(
         "sh",
         &[
             "-c",
-            "exec 3<&0; setsid sh -c 'exec -a seeyou_stdin_tag sleep 6' 0<&3 & exec sleep 5",
+            "exec 3<&0; setsid sh -c 'exec -a all-seeing-eye_stdin_tag sleep 6' 0<&3 & exec sleep 5",
         ],
         &input,
         Duration::from_millis(300),
@@ -332,7 +332,7 @@ fn descendant_setsid_garde_stdin_retour_borne() {
     // Même preuve que ci-dessus : le read-end était réellement encore
     // ouvert au retour.
     assert!(
-        pgrep_compte("seeyou_stdin_tag") >= 1,
+        pgrep_compte("all-seeing-eye_stdin_tag") >= 1,
         "le descendant setsid doit survivre au kill de groupe"
     );
 }

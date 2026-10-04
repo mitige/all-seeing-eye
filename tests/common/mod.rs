@@ -4,8 +4,8 @@
 
 #![allow(dead_code)]
 
-use seeyou::battery::Battery;
-use seeyou::engine::{PipelineContext, RunOpts};
+use all_seeing_eye::battery::Battery;
+use all_seeing_eye::engine::{PipelineContext, RunOpts};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -41,7 +41,7 @@ pub static XDG_MUTEX: Mutex<()> = Mutex::new(());
 /// Positionne une variable d'environnement (`XDG_CONFIG_HOME`,
 /// `XDG_DATA_HOME`) vers `path` et la restaure à sa valeur initiale au
 /// drop — un `cargo test` ne doit JAMAIS polluer l'environnement réel
-/// de l'utilisateur (ni écraser son `~/.local/share/seeyou/last.*`).
+/// de l'utilisateur (ni écraser son `~/.local/share/all-seeing-eye/last.*`).
 pub struct XdgGuard {
     var: &'static str,
     ancien: Option<std::ffi::OsString>,

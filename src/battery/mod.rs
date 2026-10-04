@@ -42,7 +42,7 @@ impl Battery {
 
     /// Découvre la batterie applicable à `dir`, dans l'ordre :
     /// 1. `./moulinette.toml` dans `dir` ;
-    /// 2. `~/.config/seeyou/batteries/*.toml` dont `project.name`
+    /// 2. `~/.config/all-seeing-eye/batteries/*.toml` dont `project.name`
     ///    correspond au nom du dossier ;
     /// 3. batteries embarquées (voir [`embedded_batteries`]).
     pub fn discover(dir: &Path) -> Result<Battery> {
@@ -65,9 +65,9 @@ impl Battery {
         // listées dans l'erreur finale si rien ne matche.
         let mut invalides: Vec<(PathBuf, anyhow::Error)> = Vec::new();
 
-        // 2. ~/.config/seeyou/batteries/*.toml
+        // 2. ~/.config/all-seeing-eye/batteries/*.toml
         if let Some(config) = dirs::config_dir() {
-            let batteries_dir = config.join("seeyou").join("batteries");
+            let batteries_dir = config.join("all-seeing-eye").join("batteries");
             if batteries_dir.is_dir() {
                 let mut paths: Vec<PathBuf> = fs::read_dir(&batteries_dir)
                     .with_context(|| format!("lecture de {} impossible", batteries_dir.display()))?
