@@ -14,7 +14,7 @@
 //! crash.
 
 use super::events::{Event, Step};
-use super::PipelineContext;
+use super::{tail, Collect, PipelineContext, STDERR_TAIL};
 use crate::battery::model::ProjectType;
 use crate::exec::{run_capture, ExecStatus, Limits};
 use regex::Regex;
@@ -32,44 +32,18 @@ const MAKE_TIMEOUT: Duration = Duration::from_secs(10);
 /// instantané, mais on reste borné).
 const BANANA_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Collecteur de checks : émet un [`Event::CheckFinished`] par
-/// vérification et compte pour le résumé d'étape.
-struct Collect<'a> {
-    tx: &'a mpsc::Sender<Event>,
-    total: usize,
-    failed: usize,
-}
-
-impl Collect<'_> {
-    /// Émet un check et renvoie son statut (pour l'`&=` de l'étape).
-    fn check(&mut self, name: &str, ok: bool, detail: String) -> bool {
-        self.total += 1;
-        if !ok {
-            self.failed += 1;
-        }
-        super::send(
-            self.tx,
-            Event::CheckFinished {
-                step: Step::Prelim,
-                name: name.to_string(),
-                ok,
-                detail,
-            },
-        );
-        ok
-    }
-}
+/// Profondeur maximale du scan de fichiers interdits : au-delà, les
+/// sous-dossiers sont ignorés. La traversée est itérative (pile
+/// explicite) — un arbre hostile ne peut pas déborder la pile
+/// d'appels.
+const MAX_SCAN_DEPTH: usize = 64;
 
 /// Étape 1 du pipeline : fichiers interdits, banana-check-repo, puis
 /// Makefile/règles (Binary) ou rendus/prototypes (Functions).
 /// Renvoie `true` si tous les checks passent.
 pub fn run(ctx: &mut PipelineContext, tx: &mpsc::Sender<Event>) -> bool {
     super::step_started(tx, Step::Prelim);
-    let mut c = Collect {
-        tx,
-        total: 0,
-        failed: 0,
-    };
+    let mut c = Collect::new(tx, Step::Prelim);
     let mut ok = check_forbidden_files(&ctx.target, &mut c);
     if let Some(banana_ok) = check_banana(&ctx.target, &mut c) {
         ok &= banana_ok;
@@ -78,13 +52,21 @@ pub fn run(ctx: &mut PipelineContext, tx: &mpsc::Sender<Event>) -> bool {
         ProjectType::Binary => check_makefile(ctx, &mut c),
         ProjectType::Functions => check_functions(ctx, &mut c),
     };
-    let summary = format!("{} vérifications, {} en échec", c.total, c.failed);
+    let (total, failed) = c.finish();
+    let summary = format!("{total} vérifications, {failed} en échec");
     super::step_finished(ctx, tx, Step::Prelim, ok, summary);
     ok
 }
 
 /// `true` si `name` matche un motif interdit : `*.o`, `*.a`, `*.so`,
 /// `*~`, `#*#` (au moins deux caractères), `*.swp`.
+//
+// ⚠ Liste cousine de `is_ignored_name` (build.rs) : si tu modifies
+// cette liste, vérifie l'autre. La différence `.a`/`.so` est
+// volontaire : prelim les signale comme fichiers interdits dans le
+// rendu (C-O1), tandis que la salle blanche ne filtre que les
+// artefacts qui parasiteraient la compilation — un `.a`/`.so` copié y
+// reste inerte.
 fn is_forbidden_name(name: &str) -> bool {
     name.ends_with('~')
         || (name.len() >= 2 && name.starts_with('#') && name.ends_with('#'))
@@ -94,25 +76,31 @@ fn is_forbidden_name(name: &str) -> bool {
 }
 
 /// Remplit `out` des chemins relatifs (à `base`) des fichiers
-/// interdits sous `dir`, récursivement, en ignorant `.git`. Un
-/// sous-dossier illisible est simplement ignoré. Les symlinks ne sont
-/// jamais suivis (`file_type` ne déréférence pas) : pas de boucle.
+/// interdits sous `dir`, en ignorant `.git`. Itératif (pile
+/// explicite), borné à [`MAX_SCAN_DEPTH`] niveaux : un arbre hostile
+/// ne peut pas déborder la pile d'appels. Un sous-dossier illisible
+/// est simplement ignoré. Les symlinks ne sont jamais suivis
+/// (`file_type` ne déréférence pas) : pas de boucle.
 fn collect_forbidden(dir: &Path, base: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let Ok(ft) = entry.file_type() else {
+    // Pile des (dossier, profondeur) restant à scanner.
+    let mut stack = vec![(dir.to_path_buf(), 0usize)];
+    while let Some((dir, depth)) = stack.pop() {
+        let Ok(entries) = fs::read_dir(&dir) else {
             continue;
         };
-        if ft.is_dir() {
-            if entry.file_name() == ".git" {
+        for entry in entries.flatten() {
+            let Ok(ft) = entry.file_type() else {
                 continue;
-            }
-            collect_forbidden(&entry.path(), base, out);
-        } else if is_forbidden_name(&entry.file_name().to_string_lossy()) {
-            if let Ok(rel) = entry.path().strip_prefix(base) {
-                out.push(rel.to_path_buf());
+            };
+            if ft.is_dir() {
+                if entry.file_name() == ".git" || depth >= MAX_SCAN_DEPTH {
+                    continue; // .git, et borne anti-abus de profondeur
+                }
+                stack.push((entry.path(), depth + 1));
+            } else if is_forbidden_name(&entry.file_name().to_string_lossy()) {
+                if let Ok(rel) = entry.path().strip_prefix(base) {
+                    out.push(rel.to_path_buf());
+                }
             }
         }
     }
@@ -156,16 +144,6 @@ static BANANA_LINE_RE: LazyLock<Regex> = LazyLock::new(|| {
 static NO_RULE_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"No rule to make target '([^']+)'").expect("regex no-rule invalide")
 });
-
-/// Extrait borné d'un flux d'erreur : trimmé puis tronqué à `max`
-/// caractères (sur une frontière UTF-8), « … » final si coupé.
-fn excerpt(s: &str, max: usize) -> String {
-    let s = s.trim();
-    match s.char_indices().nth(max) {
-        None => s.to_string(),
-        Some((idx, _)) => format!("{}…", &s[..idx]),
-    }
-}
 
 /// `true` si l'erreur vient d'un binaire introuvable (ENOENT), en
 /// regardant toute la chaîne de causes (`run_capture` ajoute du
@@ -283,7 +261,7 @@ fn probe_rule(dir: &Path, rule: &str) -> RuleProbe {
                 Some(cible) => RuleProbe::MissingPrereq(cible),
                 None => RuleProbe::MakefileIlisible(format!(
                     "makefile invalide: {}",
-                    excerpt(&outcome.stderr, 200)
+                    tail(&outcome.stderr, STDERR_TAIL)
                 )),
             }
         }

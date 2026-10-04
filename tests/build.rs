@@ -147,6 +147,32 @@ fn root_entries(dir: &Path) -> Vec<String> {
     entries
 }
 
+/// Listing récursif relatif de `dir` (« type chemin »), trié — pour
+/// vérifier que la cible est strictement intacte après le build.
+fn listing(dir: &Path) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        for e in fs::read_dir(&d).unwrap().flatten() {
+            let rel = e.path().strip_prefix(dir).unwrap().to_path_buf();
+            let ft = e.file_type().unwrap();
+            let tag = if ft.is_dir() {
+                "d"
+            } else if ft.is_symlink() {
+                "l"
+            } else {
+                "f"
+            };
+            out.push(format!("{tag} {}", rel.display()));
+            if ft.is_dir() {
+                stack.push(e.path());
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
 #[test]
 fn binary_ok_build_reussit_sans_salir_la_cible() {
     let (_bat_dir, battery) = load_battery(BINARY_TOML);
@@ -292,6 +318,22 @@ fn binary_cflag_manquant_penalise_sans_bloquer() {
         .as_ref()
         .and_then(|b| b.binary.as_ref())
         .is_some_and(|p| p.is_file()));
+    // Le résumé ne masque pas les pénalités non bloquantes.
+    let summary = events
+        .iter()
+        .find_map(|e| match e {
+            Event::StepFinished {
+                step: Step::Build,
+                summary,
+                ..
+            } => Some(summary.clone()),
+            _ => None,
+        })
+        .expect("StepFinished Build émis");
+    assert!(
+        summary.starts_with("build ok") && summary.contains("1 en échec"),
+        "résumé masquant la pénalité cflags : {summary:?}"
+    );
 }
 
 #[test]
@@ -344,5 +386,219 @@ fn functions_syntaxe_cassee_fait_echouer_l_etape() {
             && d.contains("compile failed: my_putstr.c")
             && d.contains("error")),
         "KO compile avec extrait stderr absent : {checks:?}"
+    );
+}
+
+/// Batterie Functions : deux deliveries dont le stem (nom du `.o`
+/// produit) est identique — collision garantie en salle blanche.
+const COLLISION_TOML: &str = r#"
+[project]
+name = "collision"
+type = "functions"
+
+[[task]]
+name = "ex01"
+delivery = "a/foo.c"
+harness = "harness/ex01_main.c"
+stdout = ""
+
+[[task]]
+name = "ex02"
+delivery = "b/foo.c"
+harness = "harness/ex02_main.c"
+stdout = ""
+"#;
+
+#[test]
+fn functions_stems_en_collision_ko_explicite() {
+    let (_bat_dir, battery) = load_battery(COLLISION_TOML);
+    let target = TempDir::new().unwrap();
+    fs::create_dir(target.path().join("a")).unwrap();
+    fs::create_dir(target.path().join("b")).unwrap();
+    fs::write(
+        target.path().join("a/foo.c"),
+        "int foo_a(void)\n{\n    return 1;\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        target.path().join("b/foo.c"),
+        "int foo_b(void)\n{\n    return 2;\n}\n",
+    )
+    .unwrap();
+
+    let (ok, events, _ctx) = run_build(&battery, target.path());
+    assert!(!ok, "deux deliveries de même stem doivent être KO");
+    let checks = extract_checks(&events);
+    assert!(
+        checks.iter().any(|(name, ok, d)| name == "compile"
+            && !*ok
+            && d.contains("collision")
+            && d.contains("a/foo.c")
+            && d.contains("b/foo.c")),
+        "KO 'collision de .o' absent ou muet : {checks:?}"
+    );
+}
+
+/// Batterie Functions : delivery keep.c — le vrai fichier du rendu
+/// « sale » du test de filtrage.
+const KEEP_TOML: &str = r#"
+[project]
+name = "filtrage"
+type = "functions"
+
+[[task]]
+name = "ex01"
+delivery = "keep.c"
+harness = "harness/ex01_main.c"
+stdout = ""
+"#;
+
+/// Un keep.c qui compile proprement avec -Wall -Wextra -Werror.
+const KEEP_C: &str = "int keep_me(void)\n{\n    return 42;\n}\n";
+
+#[test]
+fn salle_blanche_filtre_les_indesirables_cible_intacte() {
+    let (_bat_dir, battery) = load_battery(KEEP_TOML);
+    let target = TempDir::new().unwrap();
+    let t = target.path();
+    // Le vrai fichier à garder, compilable.
+    fs::write(t.join("keep.c"), KEEP_C).unwrap();
+    // Les indésirables attendus, racine et sous-dossier : .git, *.o,
+    // *~, #*#, *.swp, symlink.
+    fs::create_dir(t.join(".git")).unwrap();
+    fs::write(t.join(".git/config"), "[core]\n").unwrap();
+    fs::write(t.join("phantom.o"), b"\0").unwrap();
+    fs::write(t.join("main.c~"), "x").unwrap();
+    fs::write(t.join("#main.c#"), "x").unwrap();
+    fs::write(t.join(".main.c.swp"), "x").unwrap();
+    fs::create_dir(t.join("sub")).unwrap();
+    fs::write(t.join("sub/deep.o"), b"\0").unwrap();
+    fs::write(t.join("sub/#deep#"), "x").unwrap();
+    std::os::unix::fs::symlink("keep.c", t.join("lien")).unwrap();
+
+    let avant = listing(t);
+    let (ok, _events, ctx) = run_build(&battery, t);
+    assert!(ok, "build KO sur un rendu sale mais compilable");
+
+    let white = ctx
+        .build
+        .as_ref()
+        .expect("ctx.build posé")
+        .dir
+        .path()
+        .to_path_buf();
+    // keep.c est copié et compilé.
+    assert!(white.join("keep.c").is_file(), "keep.c non copié");
+    assert!(white.join("keep.o").is_file(), "keep.o non produit");
+    // Aucun indésirable ne traverse (symlink_metadata ne suit pas les
+    // liens : un symlink copié serait détecté).
+    for rel in [
+        ".git",
+        "phantom.o",
+        "main.c~",
+        "#main.c#",
+        ".main.c.swp",
+        "lien",
+        "sub/deep.o",
+        "sub/#deep#",
+    ] {
+        assert!(
+            fs::symlink_metadata(white.join(rel)).is_err(),
+            "{rel} ne devrait pas être en salle blanche"
+        );
+    }
+    // sub/ traverse (c'est un dossier) mais vide de ses indésirables.
+    assert!(white.join("sub").is_dir());
+    assert!(
+        root_entries(&white.join("sub")).is_empty(),
+        "sub/ devrait être vide en salle blanche"
+    );
+    // La cible est strictement intacte.
+    assert_eq!(listing(t), avant, "la cible a été modifiée");
+}
+
+#[test]
+fn binary_fclean_en_echec_re_jamais_tente() {
+    let (_bat_dir, battery) = load_battery(BINARY_TOML);
+    let target = TempDir::new().unwrap();
+    fs::write(
+        target.path().join("Makefile"),
+        "fclean:\n\tfalse\n\nre:\n\t@echo MARQUEUR_RE_EXECUTE\n",
+    )
+    .unwrap();
+
+    let (ok, events, _ctx) = run_build(&battery, target.path());
+    assert!(!ok, "fclean KO doit faire échouer le build");
+    let checks = extract_checks(&events);
+    // Un seul check make : fclean, KO — re n'est jamais tenté.
+    let makes: Vec<_> = checks.iter().filter(|(n, _, _)| n == "make").collect();
+    assert_eq!(makes.len(), 1, "plusieurs règles make tentées : {makes:?}");
+    assert!(
+        !makes[0].1 && makes[0].2.contains("make fclean"),
+        "le seul check make devrait être le KO de fclean : {makes:?}"
+    );
+    // Jamais de LogLine de la règle re.
+    assert!(
+        !events.iter().any(
+            |e| matches!(e, Event::LogLine { line, .. } if line.contains("MARQUEUR_RE_EXECUTE"))
+        ),
+        "make re tenté malgré l'échec de fclean : {events:?}"
+    );
+}
+
+/// Batterie Functions : delivery dans un sous-dossier.
+const SUBDIR_TOML: &str = r#"
+[project]
+name = "subdir"
+type = "functions"
+
+[[task]]
+name = "ex01"
+delivery = "src/my_fn.c"
+harness = "harness/ex01_main.c"
+stdout = ""
+"#;
+
+#[test]
+fn functions_delivery_en_sous_dossier_objet_a_la_racine() {
+    let (_bat_dir, battery) = load_battery(SUBDIR_TOML);
+    let target = TempDir::new().unwrap();
+    fs::create_dir(target.path().join("src")).unwrap();
+    fs::write(
+        target.path().join("src/my_fn.c"),
+        "int my_fn(void)\n{\n    return 7;\n}\n",
+    )
+    .unwrap();
+
+    let (ok, _events, ctx) = run_build(&battery, target.path());
+    assert!(ok, "delivery en sous-dossier doit compiler");
+    let white = ctx
+        .build
+        .as_ref()
+        .expect("ctx.build posé")
+        .dir
+        .path()
+        .to_path_buf();
+    // Contrat Task 7 : le .o est à la racine de la salle blanche,
+    // nommé d'après le stem de la delivery.
+    assert!(
+        white.join("my_fn.o").is_file(),
+        "my_fn.o absent de la racine : {:?}",
+        root_entries(&white)
+    );
+    assert!(white.join("src/my_fn.c").is_file(), "delivery non copiée");
+}
+
+#[test]
+fn binary_bad_makefile_build_ko() {
+    let (_bat_dir, battery) = load_battery(BINARY_TOML);
+    let (ok, events, _ctx) = run_build(&battery, &fixture("bad_makefile"));
+
+    assert!(!ok, "un Makefile invalide doit faire échouer le build");
+    let checks = extract_checks(&events);
+    // Le Makefile ne parse pas : make échoue (dès fclean).
+    assert!(
+        checks.iter().any(|(name, ok, _)| name == "make" && !*ok),
+        "check make KO absent : {checks:?}"
     );
 }

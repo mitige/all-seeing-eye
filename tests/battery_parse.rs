@@ -311,6 +311,117 @@ timout_ms = 9999
     );
 }
 
+/// Charge un TOML et renvoie l'erreur complète (panique si accepté).
+fn load_err(toml: &str) -> String {
+    let dir = TempDir::new().unwrap();
+    let path = write_battery(&dir, toml);
+    format!("{:#}", Battery::load(&path).unwrap_err())
+}
+
+/// Batterie Binary avec un champ `binary` paramétré.
+fn toml_binary(binary: &str) -> String {
+    format!("[project]\nname = \"x\"\ntype = \"binary\"\nbinary = \"{binary}\"\n")
+}
+
+/// Batterie Functions : une task, avec un `champ` TOML additionnel
+/// injecté (ligne(s) brute(s) après stdout).
+fn toml_functions(champ: &str) -> String {
+    format!(
+        "[project]\nname = \"x\"\ntype = \"functions\"\n\n\
+         [[task]]\nname = \"ex01\"\ndelivery = \"a.c\"\n\
+         harness = \"harness/ex01_main.c\"\nstdout = \"\"\n{champ}"
+    )
+}
+
+#[test]
+fn validate_rejette_binary_absolu_ou_parent_dir() {
+    for hostile in ["/bin/sh", "../sh", "a/../../sh"] {
+        let err = load_err(&toml_binary(hostile));
+        assert!(
+            err.contains("binary") && err.contains(hostile),
+            "binary hostile « {hostile} » non rejeté proprement : {err}"
+        );
+    }
+}
+
+#[test]
+fn validate_rejette_delivery_absolue_ou_parent_dir() {
+    for hostile in ["/etc/passwd.c", "../a.c"] {
+        let toml = toml_functions("").replacen("a.c", hostile, 1);
+        let err = load_err(&toml);
+        assert!(
+            err.contains("delivery") && err.contains(hostile),
+            "delivery hostile « {hostile} » non rejetée proprement : {err}"
+        );
+    }
+}
+
+#[test]
+fn validate_rejette_harness_stdout_file_extra_sources_hostiles() {
+    // (champ attendu dans le message, valeur hostile, ligne TOML)
+    let cas: &[(&str, &str, &str)] = &[
+        ("harness", "../h.c", ""), // harness substitué plus bas
+        ("harness", "/abs/h.c", ""),
+        (
+            "stdout_file",
+            "/etc/passwd",
+            "stdout_file = \"/etc/passwd\"\n",
+        ),
+        ("stdout_file", "../ex.txt", "stdout_file = \"../ex.txt\"\n"),
+        (
+            "extra_sources",
+            "../lib.c",
+            "extra_sources = [\"../lib.c\"]\n",
+        ),
+    ];
+    for (champ, hostile, ligne) in cas {
+        let mut toml = toml_functions(ligne);
+        if *champ == "harness" {
+            toml = toml.replacen("harness/ex01_main.c", hostile, 1);
+        }
+        let err = load_err(&toml);
+        assert!(
+            err.contains(champ) && err.contains(hostile),
+            "{champ} hostile « {hostile} » non rejeté proprement : {err}"
+        );
+    }
+}
+
+#[test]
+fn validate_rejette_stdout_file_hostile_sur_functional_test() {
+    let toml = "[project]\nname = \"x\"\ntype = \"binary\"\nbinary = \"x\"\n\n\
+                [[functional_test]]\nname = \"t\"\nstdout_file = \"../x.txt\"\n";
+    let err = load_err(toml);
+    assert!(
+        err.contains("stdout_file") && err.contains("../x.txt"),
+        "stdout_file hostile non rejeté sur functional_test : {err}"
+    );
+}
+
+#[test]
+fn validate_accepte_les_chemins_relatifs_propres() {
+    // Sous-dossiers relatifs légitimes : harness, extra_sources — aucun
+    // rejet. (stdout_file est testé à part : exclusif avec stdout.)
+    let toml = toml_functions("extra_sources = [\"lib/my_putchar.c\", \"src/deep/util.c\"]\n");
+    let dir = TempDir::new().unwrap();
+    let path = write_battery(&dir, &toml);
+    assert!(
+        Battery::load(&path).is_ok(),
+        "chemins relatifs propres rejetés : {:?}",
+        Battery::load(&path).err()
+    );
+
+    let toml =
+        toml_functions("stdout_file = \"expected/ex01.txt\"\n").replacen("stdout = \"\"\n", "", 1);
+    let dir = TempDir::new().unwrap();
+    let path = write_battery(&dir, &toml);
+    assert!(
+        Battery::load(&path).is_ok(),
+        "stdout_file relatif rejeté : {:?}",
+        Battery::load(&path).err()
+    );
+}
+
 #[test]
 fn discover_trouve_le_moulinette_toml_local() {
     let dir = TempDir::new().unwrap();

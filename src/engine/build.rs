@@ -18,15 +18,27 @@
 //!   Autograder will not be able to correct your work »), mais toutes
 //!   les deliveries sont compilées pour tout remonter d'un coup.
 //!
+//! Déviation assumée au plan initial (Functions) : le plan disait
+//! « compiler les *.c de la racine + les extra_sources » ; on ne
+//! compile QUE les `task.delivery`. C'est le bon choix : granularité
+//! par exercice, et un source officiel livré en extra_sources (ex.
+//! my_putchar.c) n'est pas compilé ici — il serait sinon analysé comme
+//! un rendu et déclencherait à tort le check des fonctions interdites.
+//! Contrat pour Task 7 (tests unitaires) : les `.o` produits sont un
+//! par delivery, à la RACINE de la salle blanche, nommés `<stem>.o`
+//! (stem = nom de fichier de la delivery sans extension) — d'où la
+//! garde d'unicité des stems dans `build_functions`.
+//!
 //! Les sorties des sous-processus sont relayées ligne à ligne en
 //! [`Event::LogLine`] pour le front.
 
 use super::events::{Event, Step};
-use super::{BuildArtifacts, PipelineContext, RunOpts};
+use super::{tail, BuildArtifacts, Collect, PipelineContext, RunOpts, STDERR_TAIL};
 use crate::battery::model::ProjectType;
 use crate::exec::{run_capture, ExecStatus, Limits};
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use regex::Regex;
+use std::collections::HashMap;
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -40,36 +52,16 @@ const MAKE_TIMEOUT: Duration = Duration::from_secs(120);
 /// pratique, on reste borné).
 const COMPILE_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// Nombre de lignes de stderr conservées dans le détail d'un KO.
-const STDERR_TAIL: usize = 10;
+/// Profondeur maximale de la copie en salle blanche : au-delà, les
+/// sous-dossiers sont ignorés. La traversée est itérative (pile
+/// explicite) — un arbre hostile ne peut ni déborder la pile d'appels
+/// ni faire copier des profondeurs absurdes.
+const MAX_COPY_DEPTH: usize = 64;
 
-/// Collecteur de checks : émet un [`Event::CheckFinished`] par
-/// vérification et compte pour le résumé d'étape.
-struct Collect<'a> {
-    tx: &'a mpsc::Sender<Event>,
-    total: usize,
-    failed: usize,
-}
-
-impl Collect<'_> {
-    /// Émet un check et renvoie son statut (pour l'`&=` de l'étape).
-    fn check(&mut self, name: &str, ok: bool, detail: String) -> bool {
-        self.total += 1;
-        if !ok {
-            self.failed += 1;
-        }
-        super::send(
-            self.tx,
-            Event::CheckFinished {
-                step: Step::Build,
-                name: name.to_string(),
-                ok,
-                detail,
-            },
-        );
-        ok
-    }
-}
+/// Taille cumulée maximale copiée en salle blanche : au-delà, l'étape
+/// échoue explicitement (« rendu trop gros ») plutôt que de remplir
+/// le tempdir (souvent un tmpfs).
+const MAX_COPY_BYTES: u64 = 512 * 1024 * 1024; // 512 Mio
 
 /// Étape 2 du pipeline : compilation en salle blanche (Binary ou
 /// Functions selon le type de projet). Renvoie `true` si le build
@@ -99,23 +91,18 @@ pub fn run(ctx: &mut PipelineContext, tx: &mpsc::Sender<Event>) -> bool {
         .dir
         .path()
         .to_path_buf();
-    let mut c = Collect {
-        tx,
-        total: 0,
-        failed: 0,
-    };
+    let mut c = Collect::new(tx, Step::Build);
     let ok = match ctx.battery.project.kind {
         ProjectType::Binary => build_binary(ctx, &white, &mut c),
         ProjectType::Functions => build_functions(ctx, &white, &mut c),
     };
-    let summary = if ok {
-        format!("build ok ({} vérifications)", c.total)
-    } else {
-        format!(
-            "build failed ({} vérifications, {} en échec)",
-            c.total, c.failed
-        )
-    };
+    // Les KO non bloquants (ex. cflag manquant) restent visibles dans
+    // le résumé — jamais masqués par un verdict global OK.
+    let (total, failed) = c.finish();
+    let summary = format!(
+        "build {} ({total} vérifications, {failed} en échec)",
+        if ok { "ok" } else { "failed" },
+    );
     super::step_finished(ctx, tx, Step::Build, ok, summary);
     ok
 }
@@ -130,62 +117,78 @@ fn stage_clean_room(target: &Path) -> Result<tempfile::TempDir> {
 
 /// `true` si `name` est ignoré par la copie en salle blanche :
 /// `*.o`, `*~`, `#*#` (au moins deux caractères), `*.swp`.
+//
+// ⚠ Liste cousine de `is_forbidden_name` (prelim.rs) : si tu modifies
+// cette liste, vérifie l'autre. La différence `.a`/`.so` est
+// volontaire : prelim les signale comme fichiers interdits dans le
+// rendu (C-O1), tandis que la salle blanche ne filtre que les
+// artefacts qui parasiteraient la compilation — un `.a`/`.so` copié y
+// reste inerte (jamais linké par `cc -c` ni par `make re`, qui ne
+// consomment que les sources et règles du rendu).
 fn is_ignored_name(name: &str) -> bool {
     name.ends_with('~')
         || (name.len() >= 2 && name.starts_with('#') && name.ends_with('#'))
         || [".o", ".swp"].iter().any(|ext| name.ends_with(ext))
 }
 
-/// Copie récursive de `src` dans `dst` (qui doit exister). Les entrées
-/// `.git` et les fichiers ignorés ([`is_ignored_name`]) sont exclus.
-/// Les symlinks et fichiers spéciaux (fifo, socket…) ne sont jamais
-/// suivis ni copiés : seuls les fichiers réguliers traversent — pas
-/// de lecture hors du rendu, pas de blocage sur un fifo.
+/// Copie de `src` dans `dst` (qui doit exister), bornée par
+/// [`MAX_COPY_DEPTH`] et [`MAX_COPY_BYTES`].
 fn copy_dir(src: &Path, dst: &Path) -> Result<()> {
-    for entry in
-        fs::read_dir(src).with_context(|| format!("lecture de {} impossible", src.display()))?
-    {
-        let entry = entry.with_context(|| format!("entrée illisible sous {}", src.display()))?;
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        let ftype = entry
-            .file_type()
-            .with_context(|| format!("type de {} illisible", entry.path().display()))?;
-        if name == ".git" {
-            continue; // dossier .git, mais aussi gitfile d'un worktree
-        }
-        if ftype.is_dir() {
-            let sub = dst.join(name.as_ref());
-            fs::create_dir(&sub)
-                .with_context(|| format!("création de {} impossible", sub.display()))?;
-            copy_dir(&entry.path(), &sub)?;
-        } else if ftype.is_file() && !is_ignored_name(&name) {
-            let dest = dst.join(name.as_ref());
-            fs::copy(entry.path(), &dest)
-                .with_context(|| format!("copie vers {} impossible", dest.display()))?;
+    copy_dir_capped(src, dst, MAX_COPY_DEPTH, MAX_COPY_BYTES)
+}
+
+/// Corps de [`copy_dir`], plafonds paramétrés pour les tests (le
+/// plafond réel de 512 Mio serait trop lent à atteindre). Itératif —
+/// pile explicite, jamais de récursion. Les entrées `.git` et les
+/// fichiers ignorés ([`is_ignored_name`]) sont exclus. Les symlinks
+/// et fichiers spéciaux (fifo, socket…) ne sont jamais suivis ni
+/// copiés : seuls les fichiers réguliers traversent — pas de lecture
+/// hors du rendu, pas de blocage sur un fifo.
+fn copy_dir_capped(src: &Path, dst: &Path, max_depth: usize, max_bytes: u64) -> Result<()> {
+    let mut copied: u64 = 0;
+    // Pile des (source, destination, profondeur) restant à copier.
+    let mut stack = vec![(src.to_path_buf(), dst.to_path_buf(), 0usize)];
+    while let Some((src, dst, depth)) = stack.pop() {
+        for entry in fs::read_dir(&src)
+            .with_context(|| format!("lecture de {} impossible", src.display()))?
+        {
+            let entry =
+                entry.with_context(|| format!("entrée illisible sous {}", src.display()))?;
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            let ftype = entry
+                .file_type()
+                .with_context(|| format!("type de {} illisible", entry.path().display()))?;
+            if name == ".git" {
+                continue; // dossier .git, mais aussi gitfile d'un worktree
+            }
+            if ftype.is_dir() {
+                if depth >= max_depth {
+                    continue; // arbre trop profond : ignoré (borne anti-abus)
+                }
+                let sub = dst.join(name.as_ref());
+                fs::create_dir(&sub)
+                    .with_context(|| format!("création de {} impossible", sub.display()))?;
+                stack.push((entry.path(), sub, depth + 1));
+            } else if ftype.is_file() && !is_ignored_name(&name) {
+                let size = entry
+                    .metadata()
+                    .with_context(|| format!("taille de {} illisible", entry.path().display()))?
+                    .len();
+                if copied.saturating_add(size) > max_bytes {
+                    bail!(
+                        "rendu trop gros : la copie dépasserait le plafond de {:.1} Mio",
+                        max_bytes as f64 / (1024.0 * 1024.0)
+                    );
+                }
+                copied += size;
+                let dest = dst.join(name.as_ref());
+                fs::copy(entry.path(), &dest)
+                    .with_context(|| format!("copie vers {} impossible", dest.display()))?;
+            }
         }
     }
     Ok(())
-}
-
-/// Relaie chaque ligne d'un flux capturé en [`Event::LogLine`].
-fn log_lines(tx: &mpsc::Sender<Event>, s: &str) {
-    for line in s.lines() {
-        super::send(
-            tx,
-            Event::LogLine {
-                step: Step::Build,
-                line: line.to_string(),
-            },
-        );
-    }
-}
-
-/// Les `n` dernières lignes de `s` (trim fin), jointes par '\n'.
-fn tail(s: &str, n: usize) -> String {
-    let lines: Vec<&str> = s.trim_end().lines().collect();
-    let start = lines.len().saturating_sub(n);
-    lines[start..].join("\n")
 }
 
 /// Statut d'exécution en clair, pour le détail d'un KO.
@@ -220,8 +223,8 @@ fn run_make(dir: &Path, rule: &str, c: &mut Collect) -> bool {
             );
         }
     };
-    log_lines(c.tx, &outcome.stdout);
-    log_lines(c.tx, &outcome.stderr);
+    c.log(&outcome.stdout);
+    c.log(&outcome.stderr);
     match outcome.status {
         ExecStatus::Exit(0) => c.check("make", true, format!("make {rule} ok")),
         status => {
@@ -316,6 +319,15 @@ fn select_compiler(opts: &RunOpts) -> PathBuf {
     }
 }
 
+/// Stem d'une delivery : nom de fichier sans extension (« a/foo.c » →
+/// « foo ») — le nom du `.o` produit à la racine de la salle blanche.
+fn stem_of(delivery: &str) -> &str {
+    Path::new(delivery)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(delivery)
+}
+
 /// Compile une delivery en `.o` dans la salle blanche :
 /// `<compiler> -c <cflags…> <delivery> -o <stem>.o` via
 /// `env LC_ALL=C`, borné à [`COMPILE_TIMEOUT`]. Émet le check
@@ -331,11 +343,7 @@ fn compile_one(
         // Déjà un KO de prelim — ici la compilation est impossible.
         return c.check("compile", false, format!("missing delivery: {delivery}"));
     }
-    let stem = Path::new(delivery)
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or(delivery);
-    let obj = format!("{stem}.o");
+    let obj = format!("{}.o", stem_of(delivery));
     let mut args = vec![
         "LC_ALL=C".to_string(),
         compiler.to_string_lossy().into_owned(),
@@ -362,8 +370,8 @@ fn compile_one(
             );
         }
     };
-    log_lines(c.tx, &outcome.stdout);
-    log_lines(c.tx, &outcome.stderr);
+    c.log(&outcome.stdout);
+    c.log(&outcome.stderr);
     match outcome.status {
         ExecStatus::Exit(0) if dir.join(&obj).is_file() => {
             c.check("compile", true, format!("{delivery} ok"))
@@ -391,6 +399,24 @@ fn compile_one(
 /// les deliveries sont compilées pour tout remonter d'un coup.
 fn build_functions(ctx: &PipelineContext, dir: &Path, c: &mut Collect) -> bool {
     let compiler = select_compiler(&ctx.opts);
+    // Garde d'unicité des stems : deux deliveries de même stem
+    // (« a/foo.c » et « b/foo.c ») produiraient le même `.o` à la
+    // racine de la salle blanche — le second écraserait silencieusement
+    // le premier. KO explicite avant toute compilation.
+    let mut vus: HashMap<&str, &str> = HashMap::new();
+    for task in &ctx.battery.task {
+        let stem = stem_of(&task.delivery);
+        if let Some(autre) = vus.insert(stem, task.delivery.as_str()) {
+            return c.check(
+                "compile",
+                false,
+                format!(
+                    "collision de .o : « {autre} » et « {} » produisent tous les deux {stem}.o",
+                    task.delivery
+                ),
+            );
+        }
+    }
     let mut ok = true;
     for task in &ctx.battery.task {
         ok &= compile_one(
@@ -402,4 +428,58 @@ fn build_functions(ctx: &PipelineContext, dir: &Path, c: &mut Collect) -> bool {
         );
     }
     ok
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    /// Chaîne de `n` sous-dossiers « d » sous `root` ; renvoie le
+    /// chemin du plus profond.
+    fn deep_chain(root: &Path, n: usize) -> PathBuf {
+        let mut p = root.to_path_buf();
+        for _ in 0..n {
+            p.push("d");
+        }
+        fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    #[test]
+    fn copy_dir_itere_sans_deborder_et_cappe_la_profondeur() {
+        let src = TempDir::new().unwrap();
+        let dst = TempDir::new().unwrap();
+        let deep = deep_chain(src.path(), 100);
+        fs::write(deep.join("trop_profond.txt"), "x").unwrap();
+        fs::write(src.path().join("racine.txt"), "x").unwrap();
+
+        // 100 niveaux : pas de débordement de pile (itératif).
+        copy_dir(src.path(), dst.path()).unwrap();
+
+        assert!(dst.path().join("racine.txt").is_file());
+        // Les dossiers au-delà du cap ne sont pas copiés.
+        let mut p = dst.path().to_path_buf();
+        let mut depth = 0;
+        while p.join("d").is_dir() {
+            p.push("d");
+            depth += 1;
+        }
+        assert_eq!(depth, MAX_COPY_DEPTH, "profondeur copiée : {depth}");
+        assert!(!p.join("trop_profond.txt").exists());
+    }
+
+    #[test]
+    fn copy_dir_rendu_trop_gros_ko_explicite() {
+        let src = TempDir::new().unwrap();
+        let dst = TempDir::new().unwrap();
+        fs::write(src.path().join("gros.bin"), vec![0u8; 2048]).unwrap();
+
+        // Plafond paramétré (le réel est 512 Mio — trop lent en test).
+        let err = copy_dir_capped(src.path(), dst.path(), MAX_COPY_DEPTH, 1024).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("rendu trop gros"),
+            "KO 'rendu trop gros' absent : {err:#}"
+        );
+    }
 }

@@ -139,6 +139,75 @@ fn send(tx: &mpsc::Sender<Event>, event: Event) {
     let _ = tx.send(event);
 }
 
+/// Nombre de lignes de stderr conservées dans le détail d'un KO.
+pub(crate) const STDERR_TAIL: usize = 10;
+
+/// Les `n` dernières lignes de `s` (trim fin), jointes par '\n' —
+/// extrait borné d'un flux d'erreur pour le détail d'un KO.
+pub(crate) fn tail(s: &str, n: usize) -> String {
+    let lines: Vec<&str> = s.trim_end().lines().collect();
+    let start = lines.len().saturating_sub(n);
+    lines[start..].join("\n")
+}
+
+/// Collecteur de checks d'une étape : émet un [`Event::CheckFinished`]
+/// par vérification, relaie les sorties de sous-processus en
+/// [`Event::LogLine`], et compte pour le résumé d'étape.
+pub(crate) struct Collect<'a> {
+    tx: &'a mpsc::Sender<Event>,
+    step: Step,
+    total: usize,
+    failed: usize,
+}
+
+impl Collect<'_> {
+    /// Crée un collecteur estampillé `step`, émettant sur `tx`.
+    pub(crate) fn new(tx: &mpsc::Sender<Event>, step: Step) -> Collect<'_> {
+        Collect {
+            tx,
+            step,
+            total: 0,
+            failed: 0,
+        }
+    }
+
+    /// Émet un check et renvoie son statut (pour l'`&=` de l'étape).
+    pub(crate) fn check(&mut self, name: &str, ok: bool, detail: String) -> bool {
+        self.total += 1;
+        if !ok {
+            self.failed += 1;
+        }
+        send(
+            self.tx,
+            Event::CheckFinished {
+                step: self.step,
+                name: name.to_string(),
+                ok,
+                detail,
+            },
+        );
+        ok
+    }
+
+    /// Relaie chaque ligne d'un flux capturé en [`Event::LogLine`].
+    pub(crate) fn log(&self, s: &str) {
+        for line in s.lines() {
+            send(
+                self.tx,
+                Event::LogLine {
+                    step: self.step,
+                    line: line.to_string(),
+                },
+            );
+        }
+    }
+
+    /// Bilan `(total, en échec)` pour le résumé d'étape.
+    pub(crate) fn finish(&self) -> (usize, usize) {
+        (self.total, self.failed)
+    }
+}
+
 /// Début d'étape : émet `StepStarted`.
 fn step_started(tx: &mpsc::Sender<Event>, step: Step) {
     send(

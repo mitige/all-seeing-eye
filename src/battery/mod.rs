@@ -6,7 +6,7 @@ use anyhow::{bail, ensure, Context, Result};
 use model::{FunctionalTest, ProjectMeta, ProjectType, Prototype, Task};
 use serde::Deserialize;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 /// Une batterie complète : métadonnées projet + exercices/tests,
 /// racinée dans `root` (dossier contenant le TOML).
@@ -128,6 +128,9 @@ impl Battery {
                 self.project.name
             );
         }
+        if let Some(b) = &self.project.binary {
+            ensure_chemin_rendu("binary", Path::new(b))?;
+        }
         if self.project.kind == ProjectType::Functions {
             ensure!(
                 !self.task.is_empty(),
@@ -136,6 +139,14 @@ impl Battery {
             );
         }
         for t in &self.task {
+            ensure_chemin_rendu("delivery", Path::new(&t.delivery))?;
+            ensure_chemin_rendu("harness", &t.harness)?;
+            if let Some(f) = &t.stdout_file {
+                ensure_chemin_rendu("stdout_file", f)?;
+            }
+            for s in &t.extra_sources {
+                ensure_chemin_rendu("extra_sources", s)?;
+            }
             ensure!(
                 !(t.stdout.is_some() && t.stdout_file.is_some()),
                 "task « {} » : `stdout` et `stdout_file` sont mutuellement exclusifs",
@@ -148,9 +159,28 @@ impl Battery {
                 "functional_test « {} » : `stdout` et `stdout_file` sont mutuellement exclusifs",
                 t.name
             );
+            if let Some(f) = &t.stdout_file {
+                ensure_chemin_rendu("stdout_file", f)?;
+            }
         }
         Ok(())
     }
+}
+
+/// Rejette un chemin de champ de batterie qui sortirait du rendu :
+/// absolu ou contenant `..`. Sécurité : une moulinette.toml hostile
+/// (versionnée dans le repo noté) ne doit pointer ni hors du rendu,
+/// ni hors de la racine de la batterie.
+fn ensure_chemin_rendu(champ: &str, valeur: &Path) -> Result<()> {
+    ensure!(
+        !valeur.is_absolute()
+            && !valeur
+                .components()
+                .any(|c| matches!(c, Component::ParentDir)),
+        "champ `{champ}` : chemin « {} » interdit (absolu ou hors du rendu)",
+        valeur.display()
+    );
+    Ok(())
 }
 
 /// Résout le stdout attendu : priorité à l'inline, sinon lecture du

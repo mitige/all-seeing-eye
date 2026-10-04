@@ -430,6 +430,60 @@ fn prerequis_irresoluble_n_est_pas_regle_manquante() {
 }
 
 #[test]
+fn arbre_profond_scanne_sans_crash_et_cappe_la_profondeur() {
+    let (_bat_dir, battery) = load_battery(FUNCTIONS_TOML);
+    let target = TempDir::new().unwrap();
+    fs::write(
+        target.path().join("my_putchar.c"),
+        "void my_putchar(char c);\n",
+    )
+    .unwrap();
+    // Interdit peu profond : DOIT être vu.
+    fs::write(target.path().join("truc~"), "x").unwrap();
+    // Arbre de 100 niveaux avec un interdit tout au fond : au-delà du
+    // cap de profondeur — ignoré, et surtout aucun débordement de
+    // pile (le scan est itératif).
+    let mut deep = target.path().to_path_buf();
+    for _ in 0..100 {
+        deep.push("d");
+    }
+    fs::create_dir_all(&deep).unwrap();
+    fs::write(deep.join("deep.o"), "x").unwrap();
+
+    let (ok, events) = run_prelim(&battery, target.path());
+
+    assert!(!ok, "truc~ doit être signalé");
+    let checks = extract_checks(&events);
+    assert!(
+        checks
+            .iter()
+            .any(|(_, ok, d)| !*ok && d.contains("./truc~")),
+        "truc~ (peu profond) non signalé : {checks:?}"
+    );
+    // Au-delà du cap : notre scan (« forbidden files ») ne voit pas
+    // deep.o. (banana-check-repo, outil externe, a son propre scan non
+    // cappé : ses checks ne sont pas concernés par cette borne.)
+    let notre_scan = checks
+        .iter()
+        .filter(|(name, _, _)| name == "forbidden files");
+    assert!(
+        !notre_scan.clone().any(|(_, _, d)| d.contains("deep.o")),
+        "au-delà du cap de profondeur, deep.o ne devrait pas être vu : {checks:?}"
+    );
+    // Garde-fou anti test-vacuoleux : notre scan a bien émis au moins
+    // un check (celui de truc~).
+    assert!(notre_scan.count() > 0, "aucun check 'forbidden files'");
+    // L'étape est allée au bout : pas de crash sur les 100 niveaux.
+    assert!(events.iter().any(|e| matches!(
+        e,
+        Event::StepFinished {
+            step: Step::Prelim,
+            ..
+        }
+    )));
+}
+
+#[test]
 fn functions_delivery_illisible_sans_prototype() {
     let (_bat_dir, battery) = load_battery(FUNCTIONS_TOML); // ex01 sans prototype
     let target = TempDir::new().unwrap();
