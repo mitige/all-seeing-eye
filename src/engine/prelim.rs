@@ -44,6 +44,15 @@ const MAX_SCAN_DEPTH: usize = 64;
 pub fn run(ctx: &mut PipelineContext, tx: &mpsc::Sender<Event>) -> bool {
     super::step_started(tx, Step::Prelim);
     let mut c = Collect::new(tx, Step::Prelim);
+    // Le header TUI n'affiche pas le compilateur choisi par le CLI
+    // (chaîne epiclang → cc → gcc) : on le logue ici, première étape
+    // du run — visible dans le détail TUI de l'étape comme dans le
+    // flux --no-tui. select_compiler donne le compilateur EFFECTIF
+    // (celui de build/unit/functional), pas seulement opts.compiler.
+    c.log(&format!(
+        "compilateur : {}",
+        super::build::select_compiler(&ctx.opts).display()
+    ));
     let mut ok = check_forbidden_files(&ctx.target, &mut c);
     if let Some(banana_ok) = check_banana(&ctx.target, &mut c) {
         ok &= banana_ok;

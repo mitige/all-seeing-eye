@@ -169,10 +169,15 @@ fn pipeline_emet_7_step_started_dans_l_ordre_puis_run_finished() {
             // harness — silencieuse ici). Task 10 : Verdict relaie
             // une erreur de sauvegarde du rapport (best-effort) —
             // silencieuse ici, le data dir est un tempdir inscriptible.
+            // Review Task 12 : Prelim logue le compilateur choisi
+            // (chaîne epiclang → cc → gcc) en début de run.
             Event::LogLine { step, .. } => {
                 assert!(
-                    matches!(step, Step::Build | Step::Functional | Step::Verdict),
-                    "LogLine hors Build/Functional/Verdict : {e:?}"
+                    matches!(
+                        step,
+                        Step::Prelim | Step::Build | Step::Functional | Step::Verdict
+                    ),
+                    "LogLine hors Prelim/Build/Functional/Verdict : {e:?}"
                 );
             }
             // Task 9 : l'étape Functional exécute réellement la task

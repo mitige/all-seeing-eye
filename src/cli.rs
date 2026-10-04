@@ -20,6 +20,7 @@ use crate::battery::model::ProjectType;
 use crate::battery::{self, Battery};
 use crate::engine::events::{Event, TestVerdict};
 use crate::engine::{self, RunOpts};
+use crate::exec::{run_capture, Limits};
 use crate::norme::official;
 use crate::report::{self, Report};
 use crate::tui;
@@ -28,7 +29,7 @@ use clap::{Parser, Subcommand};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// Ligne de commande `all-seeing-eye`.
 #[derive(Debug, Parser)]
@@ -87,7 +88,7 @@ fn cmd_run(cli: &Cli) -> Result<i32> {
         None => Battery::discover(&target)
             .map_err(|e| e.context("astuce : `all-seeing-eye list` liste les batteries connues"))?,
     };
-    let opts = detect_opts(cli.strict_norme);
+    let opts = detect_opts(cli.strict_norme)?;
     if cli.no_tui {
         run_texte(&battery, &target, &opts)
     } else {
@@ -95,20 +96,60 @@ fn cmd_run(cli: &Cli) -> Result<i32> {
     }
 }
 
-/// Options du run, détection compilateur incluse : la MÊME sonde que
-/// la norme ([`official::epiclang_available`] — `epiclang --version`
-/// spawnable). epiclang présent → il compile aussi ; sinon, cc.
-fn detect_opts(strict_norme: bool) -> RunOpts {
-    let use_epiclang = official::epiclang_available();
-    RunOpts {
+/// Timeout des sondes compilateur `<bin> --version`, calqué sur la
+/// sonde epiclang de la norme (5 s : un binaire pendu ne doit pas
+/// figer le démarrage).
+const SONDE_COMPILATEUR_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// `true` si `<bin> --version` est lançable : spawn borné à
+/// [`SONDE_COMPILATEUR_TIMEOUT`] via [`run_capture`] — le même
+/// traitement que la sonde epiclang de la norme.
+fn compilateur_dispo(bin: &str) -> bool {
+    run_capture(
+        Path::new(bin),
+        &["--version".to_string()],
+        "",
+        Path::new("."),
+        SONDE_COMPILATEUR_TIMEOUT,
+        Limits::default(),
+    )
+    .is_ok()
+}
+
+/// Options du run, détection compilateur incluse : **epiclang → cc →
+/// gcc**. epiclang est sondé avec la MÊME sonde que la norme
+/// ([`official::epiclang_available`]) ; cc puis gcc avec une sonde
+/// bornée identique ([`compilateur_dispo`]). Erreur claire au
+/// démarrage si aucun des trois ne répond — inutile de lancer un
+/// pipeline dont l'étape Build est condamnée.
+fn detect_opts(strict_norme: bool) -> Result<RunOpts> {
+    detect_opts_avec(strict_norme, |bin| {
+        if bin == "epiclang" {
+            official::epiclang_available()
+        } else {
+            compilateur_dispo(bin)
+        }
+    })
+}
+
+/// Corps de [`detect_opts`], sondes injectées pour les tests :
+/// `sonde(bin)` = « `bin --version` est lançable ».
+fn detect_opts_avec(strict_norme: bool, sonde: impl Fn(&str) -> bool) -> Result<RunOpts> {
+    let use_epiclang = sonde("epiclang");
+    let compiler = if use_epiclang {
+        PathBuf::from("epiclang")
+    } else if sonde("cc") {
+        PathBuf::from("cc")
+    } else if sonde("gcc") {
+        PathBuf::from("gcc")
+    } else {
+        bail!("aucun compilateur C trouvé (epiclang, cc, gcc) — vérifiez votre PATH");
+    };
+    Ok(RunOpts {
         strict_norme,
         use_epiclang,
-        compiler: if use_epiclang {
-            PathBuf::from("epiclang")
-        } else {
-            PathBuf::from("cc")
-        },
-    }
+        compiler,
+    })
 }
 
 /// Lance le pipeline dans un thread et renvoie le receiver des events
@@ -121,6 +162,9 @@ fn spawn_pipeline(
     target: &Path,
     opts: &RunOpts,
 ) -> (mpsc::Receiver<Event>, std::thread::JoinHandle<()>) {
+    // Canal non borné : le drain TUI est borné par tick (DRAIN_MAX_*)
+    // et la mémoire par le volume d'events d'un run (étapes, checks,
+    // tests d'une batterie) — jamais un flux infini.
     let (tx, rx) = mpsc::channel::<Event>();
     let battery = battery.clone();
     let target = target.to_path_buf();
@@ -139,13 +183,32 @@ fn spawn_pipeline(
 fn run_tui(battery: &Battery, target: &Path, opts: &RunOpts) -> Result<i32> {
     let started = Instant::now();
     let (rx, handle) = spawn_pipeline(battery, target, opts);
-    let report = tui::run(rx, battery.project.name.clone(), started)?;
-    // RunFinished reçu (sinon `tui::run` a déjà renvoyé une erreur) :
-    // le thread pipeline est fini ou mort, join immédiat — jamais de
-    // thread laissé en vol.
-    let _ = handle.join();
+    // PAS de `?` ici : une erreur TUI (init impossible, « q » avant la
+    // fin du run) propagerait sans joindre le thread pipeline — il
+    // resterait en vol jusqu'à la fin du process et sa salle blanche
+    // (TempDir du build) fuirait dans /tmp. [`fin_de_run`] joint donc
+    // d'abord, puis propage.
+    let resultat = tui::run(rx, battery.project.name.clone(), started);
+    let report = fin_de_run(resultat, handle)?;
     print!("{}", report::render_text(&report));
     Ok(exit_code(&report))
+}
+
+/// Fin d'un run TUI : joint le thread pipeline QUOI QU'IL ARRIVE —
+/// y compris quand le front est parti en erreur — puis propage le
+/// résultat du front.
+///
+/// Le join ne peut pas PENDRE : au retour de `tui::run` le receiver
+/// est droppé, et un receiver mort ne bloque ni n'arrête le pipeline
+/// (canal non borné, `engine::send` ignore l'erreur) — le thread finit
+/// donc toujours sa course, en sourdine. Il peut en revanche ATTENDRE
+/// la fin du travail en cours, bornée par les timeouts propres au
+/// pipeline (compiles, make, tests) : trade-off assumé — l'alternative
+/// (thread détaché, tué à la sortie du process) laisserait fuiter la
+/// salle blanche dans /tmp.
+fn fin_de_run(resultat: Result<Report>, handle: std::thread::JoinHandle<()>) -> Result<Report> {
+    let _ = handle.join();
+    resultat
 }
 
 /// Run `--no-tui` : le compilateur détecté est logué en en-tête,
@@ -183,9 +246,17 @@ fn run_texte(battery: &Battery, target: &Path, opts: &RunOpts) -> Result<i32> {
 /// norme. `TestStarted` et `RunFinished` n'impriment rien : le verdict
 /// du test suffit, et le rapport complet suit.
 fn affiche_event(ev: &Event) {
-    match ev {
-        Event::StepStarted { step, label } => println!("[{}] {label}", step.name()),
-        Event::LogLine { step, line } => println!("[{}] {line}", step.name()),
+    if let Some(ligne) = ligne_event(ev) {
+        println!("{ligne}");
+    }
+}
+
+/// Formate un event en sa ligne texte `--no-tui` (None = rien à
+/// imprimer) — corps pur de [`affiche_event`], testable.
+fn ligne_event(ev: &Event) -> Option<String> {
+    Some(match ev {
+        Event::StepStarted { step, label } => format!("[{}] {label}", step.name()),
+        Event::LogLine { step, line } => format!("[{}] {line}", step.name()),
         Event::CheckFinished {
             step,
             name,
@@ -194,12 +265,12 @@ fn affiche_event(ev: &Event) {
         } => {
             let statut = if *ok { "ok" } else { "KO" };
             if detail.is_empty() {
-                println!("[{}] {statut} {name}", step.name());
+                format!("[{}] {statut} {name}", step.name())
             } else {
-                println!("[{}] {statut} {name} — {detail}", step.name());
+                format!("[{}] {statut} {name} — {detail}", step.name())
             }
         }
-        Event::TestStarted { .. } => {}
+        Event::TestStarted { .. } => return None,
         Event::TestFinished { name, result, .. } => {
             let icone = match result {
                 TestVerdict::Passed => "✓",
@@ -207,9 +278,9 @@ fn affiche_event(ev: &Event) {
                 TestVerdict::Crashed(_) => "💥",
                 TestVerdict::Timeout => "⏱",
             };
-            println!("  {icone} {name}");
+            format!("  {icone} {name}")
         }
-        Event::NormeFault(f) => println!(
+        Event::NormeFault(f) => format!(
             "{}:{}:{}: {} {} ({})",
             f.file.display(),
             f.line,
@@ -224,17 +295,24 @@ fn affiche_event(ev: &Event) {
             skipped,
             summary,
         } => {
-            let statut = if *skipped {
-                "skipped"
-            } else if *ok {
-                "OK"
+            // Un summary « skipped: … » porte déjà le motif (engine
+            // step_skipped/step_disabled) : ne pas préfixer une
+            // seconde fois.
+            if *skipped && summary.starts_with("skipped:") {
+                format!("[{}] {summary}", step.name())
             } else {
-                "KO"
-            };
-            println!("[{}] {statut} — {summary}", step.name());
+                let statut = if *skipped {
+                    "skipped"
+                } else if *ok {
+                    "OK"
+                } else {
+                    "KO"
+                };
+                format!("[{}] {statut} — {summary}", step.name())
+            }
         }
-        Event::RunFinished { .. } => {}
-    }
+        Event::RunFinished { .. } => return None,
+    })
 }
 
 /// Code de sortie CI : 0 si score global 100.0 ET toutes les étapes
@@ -324,6 +402,14 @@ impl BatterieConnue {
     }
 }
 
+/// Description d'une batterie illisible, pour `list` : l'erreur est
+/// aplatie sur UNE ligne — une erreur TOML est multi-lignes (contexte
+/// ligne/colonne) et `list` imprime une ligne par batterie ; « ⏎ »
+/// marque les sauts aplatis.
+fn description_illisible(message: String) -> String {
+    format!("illisible : {}", message.replace('\n', " ⏎ "))
+}
+
 /// Toutes les batteries connues :
 /// `~/.config/all-seeing-eye/batteries/*.toml` (triées par chemin ;
 /// les illisibles restent listées avec leur erreur — jamais
@@ -349,7 +435,7 @@ fn batteries_connues() -> Vec<BatterieConnue> {
                         .map(|s| s.to_string_lossy().into_owned())
                         .unwrap_or_else(|| path.display().to_string()),
                     kind: "?".to_string(),
-                    description: format!("illisible : {e:#}"),
+                    description: description_illisible(format!("{e:#}")),
                     origine: path.display().to_string(),
                 },
             };
@@ -362,7 +448,7 @@ fn batteries_connues() -> Vec<BatterieConnue> {
             Err(e) => BatterieConnue {
                 nom: nom.to_string(),
                 kind: "?".to_string(),
-                description: format!("illisible : {e:#}"),
+                description: description_illisible(e.to_string()),
                 origine: "embarquée".to_string(),
             },
         };
@@ -441,8 +527,11 @@ fn cmd_report(no_tui: bool) -> Result<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::events::Step;
     use crate::report::Scores;
     use crate::report::StepReport;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
 
     /// Rapport minimal au score global et à l'état d'étape voulus.
     fn rapport(global: f64, etapes_ok: bool) -> Report {
@@ -501,5 +590,132 @@ mod tests {
         for nom in ["", ".", "..", "a/b", "a\\b"] {
             assert!(batterie_nommee(nom).is_err(), "accepté : « {nom} »");
         }
+    }
+
+    #[test]
+    fn detection_compilateur_chaine_epiclang_puis_cc_puis_gcc() {
+        // epiclang présent → choisi, cc/gcc jamais consultés.
+        let o = detect_opts_avec(false, |bin| bin == "epiclang").unwrap();
+        assert_eq!(o.compiler, PathBuf::from("epiclang"));
+        assert!(o.use_epiclang);
+        // epiclang absent, cc présent → cc.
+        let o = detect_opts_avec(false, |bin| bin == "cc").unwrap();
+        assert_eq!(o.compiler, PathBuf::from("cc"));
+        assert!(!o.use_epiclang);
+        // epiclang et cc absents → gcc ; le reste des options suit.
+        let o = detect_opts_avec(true, |bin| bin == "gcc").unwrap();
+        assert_eq!(o.compiler, PathBuf::from("gcc"));
+        assert!(o.strict_norme);
+        // Aucun des trois → erreur claire qui les nomme tous.
+        let e = detect_opts_avec(false, |_| false).unwrap_err();
+        let msg = format!("{e:#}");
+        assert!(
+            msg.contains("aucun compilateur C trouvé")
+                && msg.contains("epiclang")
+                && msg.contains("cc")
+                && msg.contains("gcc"),
+            "message peu clair : {msg}"
+        );
+    }
+
+    #[test]
+    fn fin_de_run_joint_le_thread_meme_si_le_tui_a_echoue() {
+        // Receiver mort d'emblée (le front est parti en erreur, ou « q »
+        // avant la fin du run) : les sends échouent instantanément sans
+        // bloquer (canal non borné, engine::send ignore l'erreur), le
+        // thread finit donc sa course — et fin_de_run le joint AVANT de
+        // propager l'erreur : jamais de thread pipeline laissé en vol.
+        let (tx, rx) = mpsc::channel::<Event>();
+        drop(rx);
+        let fini = Arc::new(AtomicBool::new(false));
+        let fini_thread = Arc::clone(&fini);
+        let handle = std::thread::spawn(move || {
+            for i in 0..10_000 {
+                let _ = tx.send(Event::LogLine {
+                    step: Step::Prelim,
+                    line: format!("ligne {i}"),
+                });
+            }
+            fini_thread.store(true, Ordering::SeqCst);
+        });
+        let debut = Instant::now();
+        let res = fin_de_run(Err(anyhow::anyhow!("tui KO")), handle);
+        assert!(res.is_err(), "l'erreur du front doit être propagée");
+        assert!(
+            fini.load(Ordering::SeqCst),
+            "le thread pipeline doit avoir été joint (course finie)"
+        );
+        assert!(
+            debut.elapsed() < Duration::from_secs(5),
+            "le join ne doit pas attendre ({:?})",
+            debut.elapsed()
+        );
+    }
+
+    #[test]
+    fn fin_de_run_propage_le_rapport_sur_succes() {
+        let handle = std::thread::spawn(|| {});
+        let report = fin_de_run(Ok(rapport(100.0, true)), handle).unwrap();
+        assert_eq!(report.scores.global, 100.0);
+    }
+
+    #[test]
+    fn ligne_event_skipped_ne_double_pas_le_prefixe() {
+        // Les summaries d'étapes skipped portent déjà « skipped: <raison> »
+        // (engine::step_skipped / step_disabled) : ne pas répéter le mot.
+        let ev = Event::StepFinished {
+            step: Step::Symbols,
+            ok: true,
+            skipped: true,
+            summary: "skipped: allowed_functions vide".to_string(),
+        };
+        assert_eq!(
+            ligne_event(&ev).as_deref(),
+            Some("[symbols] skipped: allowed_functions vide")
+        );
+    }
+
+    #[test]
+    fn ligne_event_statuts_et_silences() {
+        let fin = |ok: bool, skipped: bool, summary: &str| Event::StepFinished {
+            step: Step::Build,
+            ok,
+            skipped,
+            summary: summary.to_string(),
+        };
+        assert_eq!(
+            ligne_event(&fin(true, false, "build ok")).as_deref(),
+            Some("[build] OK — build ok")
+        );
+        assert_eq!(
+            ligne_event(&fin(false, false, "boom")).as_deref(),
+            Some("[build] KO — boom")
+        );
+        // Skipped SANS préfixe dans le summary (défensif) : préfixe normal.
+        assert_eq!(
+            ligne_event(&fin(false, true, "dépendance KO")).as_deref(),
+            Some("[build] skipped — dépendance KO")
+        );
+        // TestStarted et RunFinished n'impriment rien.
+        assert!(ligne_event(&Event::TestStarted {
+            group: "unit".to_string(),
+            name: "t".to_string(),
+        })
+        .is_none());
+        assert!(ligne_event(&Event::RunFinished {
+            report: Box::new(rapport(100.0, true)),
+        })
+        .is_none());
+    }
+
+    #[test]
+    fn description_illisible_aplatit_les_erreurs_toml_multilignes() {
+        // Une vraie erreur toml est multi-lignes (contexte ligne/colonne) ;
+        // `list` imprime UNE ligne par batterie.
+        let e = toml::from_str::<Battery>("[[[casse").unwrap_err();
+        let d = description_illisible(e.to_string());
+        assert!(d.starts_with("illisible : "), "{d}");
+        assert!(!d.contains('\n'), "erreur non aplatie : {d:?}");
+        assert!(d.contains('⏎'), "sauts aplatis marqués : {d}");
     }
 }

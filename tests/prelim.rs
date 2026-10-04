@@ -504,3 +504,28 @@ fn functions_delivery_illisible_sans_prototype() {
         "delivery illisible non signalée : {checks:?}"
     );
 }
+
+#[test]
+fn logue_le_compilateur_choisi_en_premiere_etape() {
+    // Le header TUI n'affiche pas le compilateur détecté par le CLI
+    // (chaîne epiclang → cc → gcc) : prelim, première étape du run, le
+    // logue — visible dans le détail TUI de l'étape comme dans le
+    // flux --no-tui.
+    let (_bat_dir, battery) = load_battery(BINARY_TOML);
+    let (_ok, events) = run_prelim(&battery, &fixture("clean_repo"));
+    let lignes: Vec<&str> = events
+        .iter()
+        .filter_map(|e| match e {
+            Event::LogLine { step, line } => {
+                assert_eq!(*step, Step::Prelim, "log émis pour la mauvaise étape");
+                Some(line.as_str())
+            }
+            _ => None,
+        })
+        .collect();
+    // test_ctx pose compiler = "cc", use_epiclang = false.
+    assert!(
+        lignes.contains(&"compilateur : cc"),
+        "LogLine compilateur absente : {lignes:?}"
+    );
+}

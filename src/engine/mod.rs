@@ -336,4 +336,28 @@ mod tests {
             assert_eq!(skip_reason(s, &m), None, "skip inattendu pour {s:?}");
         }
     }
+
+    #[test]
+    fn send_receiver_mort_echoue_sans_bloquer_ni_paniquer() {
+        // Propriété dont dépend le join systématique du CLI sur erreur
+        // TUI (cli::fin_de_run) : un receiver droppé ne bloque ni
+        // n'arrête le pipeline — chaque send échoue instantanément et
+        // est ignoré (canal non borné), le thread finit sa course.
+        let (tx, rx) = mpsc::channel();
+        drop(rx);
+        let debut = Instant::now();
+        for _ in 0..10_000 {
+            send(
+                &tx,
+                Event::StepStarted {
+                    step: Step::Prelim,
+                    label: String::new(),
+                },
+            );
+        }
+        assert!(
+            debut.elapsed() < std::time::Duration::from_secs(5),
+            "send ne doit jamais bloquer, même receiver mort"
+        );
+    }
 }

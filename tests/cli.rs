@@ -13,6 +13,10 @@
 //! le choisit comme compilateur, et banana + `-Werror` transforment
 //! toute faute de norme en erreur de compilation — une fixture sale
 //! ferait échouer le build pour la mauvaise raison.
+//!
+//! NB : ces tests E2E sont Linux-only de fait — `dirs::config_dir`
+//! ignore `XDG_CONFIG_HOME` sur macOS (l'isolement des fixtures n'y
+//! fonctionnerait pas), et l'outil est de toute façon Linux-scopé.
 
 use all_seeing_eye::cli::{Cli, Sub};
 use clap::Parser;
@@ -194,6 +198,16 @@ fn no_tui_delivery_correcte_exit_0_score_et_rapport() {
         stderr(&out)
     );
     assert!(stdout.contains("✓ ex01"), "test ex01 absent\n{stdout}");
+    // Le compilateur choisi est visible : en-tête ET LogLine de la
+    // première étape (prelim).
+    assert!(
+        stdout.contains("compilateur :"),
+        "compilateur absent de l'en-tête\n{stdout}"
+    );
+    assert!(
+        stdout.contains("[prelim] compilateur :"),
+        "LogLine compilateur absente de prelim\n{stdout}"
+    );
     assert!(
         stdout.contains("SCORE GLOBAL : 100.0%"),
         "score absent\n{stdout}"
@@ -278,5 +292,61 @@ fn batterie_inconnue_erreur_listant_les_connues() {
     assert!(
         stderr.contains("e2e_cli"),
         "les batteries connues doivent être listées : {stderr}"
+    );
+}
+
+#[test]
+fn sans_compilateur_erreur_claire_au_demarrage() {
+    let f = Fixture::avec_batterie(DELIVERY_OK);
+    // PATH vide de tout compilateur : la détection (epiclang → cc →
+    // gcc) doit échouer AVANT de lancer le pipeline, avec un message
+    // qui nomme les trois.
+    let out = f
+        .commande()
+        .args(["--no-tui", "--battery", "e2e_cli"])
+        .env("PATH", "/nonexistent")
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "sans compilateur le run doit échouer\nstdout:\n{}",
+        stdout(&out)
+    );
+    let stderr = stderr(&out);
+    assert!(
+        stderr.contains("aucun compilateur C trouvé")
+            && stderr.contains("epiclang")
+            && stderr.contains("cc")
+            && stderr.contains("gcc"),
+        "message peu clair : {stderr}"
+    );
+}
+
+#[test]
+fn list_aplatit_les_erreurs_toml_multilignes() {
+    let f = Fixture::avec_batterie(DELIVERY_OK);
+    // Une batterie cassée : l'erreur TOML est multi-lignes (contexte
+    // ligne/colonne) — `list` doit rester à UNE ligne par batterie.
+    fs::write(
+        f.config.path().join("all-seeing-eye/batteries/cassee.toml"),
+        "[[[pas du toml",
+    )
+    .unwrap();
+    let out = f.commande().arg("list").output().unwrap();
+    let stdout = stdout(&out);
+    assert!(out.status.success(), "list KO : {}", stderr(&out));
+    let lignes: Vec<&str> = stdout.lines().collect();
+    assert_eq!(
+        lignes.len(),
+        2,
+        "une ligne par batterie attendue (cassee + e2e_cli)\n{stdout}"
+    );
+    let cassee = lignes
+        .iter()
+        .find(|l| l.starts_with("cassee"))
+        .expect("batterie cassée absente de la liste");
+    assert!(
+        cassee.contains("illisible"),
+        "erreur non signalée : {cassee}"
     );
 }
