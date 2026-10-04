@@ -11,8 +11,15 @@
 //! Écarts connus et assumés vis-à-vis de banana (qui voit l'AST clang)
 //! : déclarations reconnues par une liste de types usuels, paramètres
 //! sur une seule ligne de prototype, fonctions détectées par
-//! « identificateur + parenthèses + `{` à profondeur 0 ». Les messages,
-//! sévérités et positions calibrés sont en revanche identiques.
+//! « identificateur + parenthèses + `{` à profondeur 0 ». Les lignes de
+//! continuation d'une directive préprocesseur (`\` final hors chaîne)
+//! sont blankées comme la directive elle-même — le corps d'un `#define`
+//! multi-lignes n'est pas analysé comme du code (banana y émet
+//! C-H1/C-H3, règles que ce moteur ne couvre pas). En revanche une
+//! CHAÎNE multi-lignes (`"…\` puis la suite à la ligne suivante) n'est
+//! pas reconnue : le lexer clos les chaînes en fin de ligne et la
+//! continuation est sous-rapportée. Les messages, sévérités et
+//! positions calibrés sont en revanche identiques.
 
 use crate::norme::{NormeFault, Severity};
 use regex::Regex;
@@ -207,13 +214,23 @@ fn scan(content: &str) -> Scan {
         let last_c = raw_lines.last().map_or(1, |l| l.chars().count() as u32);
         comments.push((comment_start, (last_l, last_c)));
     }
-    // Préprocesseur : ligne dont le premier non-blanc brut est '#'.
+    // Préprocesseur : ligne dont le premier non-blanc brut est '#',
+    // ainsi que toute ligne de continuation — une ligne qui suit une
+    // ligne terminée par '\' HORS chaîne/commentaire (un '\' ne survit
+    // dans le code blanké qu'en état Code). Sans ça, le corps d'un
+    // #define multi-lignes serait analysé comme du code (faux C-G4
+    // « global variable » alors que banana ne voit qu'une macro).
+    let mut continuation = false;
     for (raw, out) in raw_lines.iter().zip(code_lines.iter_mut()) {
-        if raw.trim_start().starts_with('#') {
+        // À évaluer AVANT le blankage de la ligne : une continuation
+        // peut elle-même finir par '\' et prolonger la directive.
+        let prolonge = out.iter().rev().find(|c| !c.is_whitespace()) == Some(&'\\');
+        if continuation || raw.trim_start().starts_with('#') {
             for ch in out.iter_mut() {
                 *ch = ' ';
             }
         }
+        continuation = prolonge;
     }
     Scan {
         raw_lines,
@@ -1190,8 +1207,9 @@ fn declarator_name(chars: &[char], a: usize, b: usize) -> Option<usize> {
         }
         j += 1;
     }
-    // Au moins deux idents (type + nom) OU un seul ident si le
-    // déclarateur n'a pas de type visible (segment après `}` : « g_p »).
+    // Le nom est le dernier ident retenu : il suit le type quand
+    // celui-ci est visible (`int g_counter`), et se suffit à lui-même
+    // dans un segment sans type visible (après `}` : « g_p »).
     last.map(|(start, _)| start)
 }
 
@@ -1696,6 +1714,51 @@ mod tests {
     fn g4_prototype_non_flagge() {
         let src = format!("{HEADER}int my_f(int a);\n\nint my_f(int a)\n{{\n    return a;\n}}\n");
         assert!(regle(&fautes(&src), "C-G4").is_empty());
+    }
+
+    // ------------------------- macros multi-lignes -------------------------
+
+    #[test]
+    fn macro_multilignes_continuation_non_flaggee() {
+        // Le corps d'un #define multi-lignes n'est pas du code : banana
+        // émet C-H1/C-H3 sur la macro, jamais C-G4 sur sa continuation.
+        let src = format!(
+            "{HEADER}#define MY_INIT \\\n    int g_x;\n\nint my_f(void)\n{{\n    return 0;\n}}\n"
+        );
+        let f = fautes(&src);
+        assert!(
+            regle(&f, "C-G4").is_empty(),
+            "continuation de macro analysée comme du code : {f:?}"
+        );
+    }
+
+    #[test]
+    fn macro_multilignes_chaine_de_continuations() {
+        // Deux continuations à la suite : TOUTES les lignes de la
+        // directive sont blankées, pas seulement la première.
+        let src = format!(
+            "{HEADER}#define MY_BIG \\\n    int g_x; \\\n    int g_y;\n\nint my_f(void)\n{{\n    return 0;\n}}\n"
+        );
+        let f = fautes(&src);
+        assert!(
+            regle(&f, "C-G4").is_empty(),
+            "chaîne de continuations analysée comme du code : {f:?}"
+        );
+    }
+
+    #[test]
+    fn backslash_final_dans_chaine_nest_pas_une_continuation() {
+        // Un '\' final DANS une chaîne (non terminée) ne blanke pas la
+        // ligne suivante : le goto reste visible (C-C3).
+        let src = format!(
+            "{HEADER}int my_f(void)\n{{\n    char *s = \"abc\\\n    goto end;\nend:\n    return 0;\n}}\n"
+        );
+        let f = fautes(&src);
+        assert_eq!(
+            regle(&f, "C-C3").len(),
+            1,
+            "le goto sous la chaîne doit rester visible : {f:?}"
+        );
     }
 
     // ------------------------- C-L1 (plusieurs instructions) -------------------------

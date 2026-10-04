@@ -16,13 +16,11 @@
 //!
 //! DÉCISION (documentée, à relire avec Task 10) : l'étape renvoie
 //! `true` dès qu'elle a pu s'exécuter — même avec des fautes Major ou
-//! Fatal. La pénalité des fautes est du ressort du verdict ; bloquer
-//! ici masquerait le détail des fautes derrière un simple « KO » et
-//! court-circuiterait le skip des étapes dépendantes du build, qui ne
-//! concerne pas la norme. `false` uniquement si l'étape ne peut pas
-//! s'exécuter (strict + epiclang absent). Les problèmes par fichier
-//! (epiclang en timeout, source illisible) dégradent en check KO sans
-//! faire échouer l'étape.
+//! Fatal. C'est le verdict (Task 10) qui score les fautes collectées
+//! dans `ctx.norme_faults` ; l'étape elle-même ne renvoie `false` que
+//! si elle est inexécutable (`--strict-norme` sans epiclang). Les
+//! problèmes par fichier (epiclang en timeout ou en exit ≠ 0, source
+//! illisible) dégradent en check KO sans faire échouer l'étape.
 //!
 //! `RunOpts::use_epiclang` pilote la COMPILATION (build) ; la norme
 //! suit la spec : officiel dès qu'epiclang est détecté.
@@ -164,10 +162,12 @@ fn check_file_result(
     }
 }
 
-/// Chemin officiel : epiclang par `.c`/`.h` du rendu.
+/// Chemin officiel : epiclang par `.c`/`.h` du rendu, avec les
+/// `-I*`/`-D*` des cflags de la batterie forwardés (sinon un source
+/// qui inclut un header du projet échouerait en « file not found »).
 fn run_official(ctx: &mut PipelineContext, tx: &mpsc::Sender<Event>, c: &mut Collect) {
     for rel in collect_sources(&ctx.target, false) {
-        match official::check_one(&ctx.target, &rel) {
+        match official::check_one(&ctx.target, &rel, &ctx.battery.project.cflags) {
             Ok(outcome) => {
                 check_file_result(c, &rel, &outcome.faults, outcome.note.as_deref());
                 for f in outcome.faults {

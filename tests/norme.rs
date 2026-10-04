@@ -151,6 +151,57 @@ fn step_finished(events: &[Event]) -> Option<(bool, String)> {
     })
 }
 
+/// Vérifie structurellement un résumé « N fatal, M major, … » contre
+/// les fautes réelles : format « compte label » par morceau, ordre de
+/// gravité décroissant, chaque compte égal au nombre de fautes de
+/// cette sévérité, et toutes les fautes couvertes. Ne dépend pas des
+/// comptes exacts produits par une version donnée de banana.
+fn assert_summary_coherent(summary: &str, faults: &[seeyou::norme::NormeFault]) {
+    let severite = |label: &str| match label {
+        "fatal" => Some(Severity::Fatal),
+        "major" => Some(Severity::Major),
+        "minor" => Some(Severity::Minor),
+        "info" => Some(Severity::Info),
+        _ => None,
+    };
+    let gravite = |s: &Severity| match s {
+        Severity::Fatal => 0,
+        Severity::Major => 1,
+        Severity::Minor => 2,
+        Severity::Info => 3,
+    };
+    let mut precedente: Option<Severity> = None;
+    let mut couvertes = 0;
+    for part in summary.split(", ") {
+        let (n, label) = part
+            .split_once(' ')
+            .unwrap_or_else(|| panic!("morceau mal formé : {part:?} dans {summary:?}"));
+        let n: usize = n
+            .parse()
+            .unwrap_or_else(|_| panic!("compte invalide : {part:?} dans {summary:?}"));
+        let sev = severite(label)
+            .unwrap_or_else(|| panic!("sévérité inconnue : {part:?} dans {summary:?}"));
+        if let Some(p) = &precedente {
+            assert!(
+                gravite(&sev) > gravite(p),
+                "gravité non décroissante : {summary:?}"
+            );
+        }
+        let reel = faults.iter().filter(|f| f.severity == sev).count();
+        assert_eq!(
+            n, reel,
+            "compte {label} : {n} dans le summary vs {reel} fautes réelles"
+        );
+        couvertes += n;
+        precedente = Some(sev);
+    }
+    assert_eq!(
+        couvertes,
+        faults.len(),
+        "fautes non couvertes par le summary {summary:?}"
+    );
+}
+
 #[test]
 fn officiel_parse_dirty_c() {
     let _lock = ENV_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
@@ -188,11 +239,126 @@ fn officiel_parse_dirty_c() {
     }
     // Chaque faute a été émise en event NormeFault.
     assert_eq!(norme_faults_events(&events).len(), f.len());
-    // Résumé : sévérités > 0 seulement — ici 3 major (F5, L1, C3),
-    // 4 minor (G1, G7, F8 + le C-L2 du label `end:`).
+    // Résumé : structurellement cohérent avec les fautes réelles —
+    // robuste à une montée de version banana qui changerait les
+    // comptes exacts.
     let (fin_ok, summary) = step_finished(&events).expect("StepFinished norme manquant");
     assert!(fin_ok);
-    assert_eq!(summary, "3 major, 4 minor", "summary : {summary}");
+    assert_summary_coherent(&summary, f);
+}
+
+// ----------------------------------------------------------------
+// Chemin officiel : forwarding des -I/-D de la batterie, et
+// exit ≠ 0 d'epiclang remonté en check KO visible.
+// ----------------------------------------------------------------
+
+/// Batterie avec des cflags préprocesseur à forwarder (et des -W*,
+/// dont -Werror, qui ne doivent PAS l'être).
+const INCLUDE_TOML: &str = r#"
+[project]
+name = "inc"
+type = "binary"
+binary = "hello"
+cflags = ["-Wall", "-Wextra", "-Werror", "-Iinclude", "-DMY_FLAG=1"]
+"#;
+
+#[test]
+fn officiel_forwarde_les_includes_de_la_batterie() {
+    let _lock = ENV_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
+    if !epiclang_present() {
+        eprintln!("epiclang absent : test skippé");
+        return;
+    }
+    let (_bat_dir, battery) = load_battery(INCLUDE_TOML);
+    let mut ctx = common::test_ctx(&battery, &fixture("norme_include"));
+
+    let (ok, _events) = run_norme(&mut ctx);
+
+    assert!(ok, "l'étape doit retourner true même avec des fautes");
+    // L'include résolu → analyse réelle : les fautes de src/main.c
+    // remontent. Sans le -I, epiclang échouerait en « file not found »
+    // et le fichier serait rapporté clean — faux négatif silencieux.
+    let f = &ctx.norme_faults;
+    for rule in ["C-G1", "C-F5"] {
+        assert!(
+            f.iter()
+                .any(|x| x.rule == rule && x.file == PathBuf::from("src/main.c")),
+            "{rule} absente de src/main.c : {f:?}"
+        );
+    }
+    // ...et aucune analyse partielle : l'exit code est resté 0 malgré
+    // les warnings banana — preuve que le -Werror n'a PAS été forwardé.
+    let report = ctx
+        .steps
+        .iter()
+        .find(|s| s.step == "norme")
+        .expect("StepReport norme manquant");
+    assert!(
+        !report
+            .checks
+            .iter()
+            .any(|(_, ok, d)| !ok && d.contains("analyse partielle")),
+        "analyse partielle inattendue : {:?}",
+        report.checks
+    );
+}
+
+#[test]
+fn officiel_exit_non_zero_ko_visible_sans_faire_echouer_l_etape() {
+    let _lock = ENV_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
+    if !epiclang_present() {
+        eprintln!("epiclang absent : test skippé");
+        return;
+    }
+    let (_bat_dir, battery) = load_battery(BINARY_TOML);
+    let mut ctx = common::test_ctx(&battery, &fixture("norme_broken_include"));
+
+    let (ok, _events) = run_norme(&mut ctx);
+
+    // Le KO est visible mais ne fait PAS échouer l'étape (c'est un
+    // check, pas un verdict d'étape).
+    assert!(
+        ok,
+        "un exit ≠ 0 d'epiclang ne doit pas faire échouer l'étape"
+    );
+    let report = ctx
+        .steps
+        .iter()
+        .find(|s| s.step == "norme")
+        .expect("StepReport norme manquant");
+    assert!(
+        report.checks.iter().any(|(name, ok, d)| name == "norme"
+            && !*ok
+            && d.contains("broken.c")
+            && d.contains("analyse partielle")),
+        "check KO « analyse partielle » manquant : {:?}",
+        report.checks
+    );
+    // Les fautes éventuellement déjà émises avant la mort de clang
+    // (C-G1 est vérifiée en ligne 1) restent collectées — d'où la
+    // note « analyse partielle ».
+}
+
+#[test]
+fn probe_epiclang_timeout_borne() {
+    let _lock = ENV_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
+    // Un faux epiclang qui pend : la probe doit être bornée (5 s), pas
+    // attendre la fin du processus. Le script n'utilise que des
+    // chemins absolus : le PATH réduit au tempdir suffit.
+    let dir = TempDir::new().unwrap();
+    let fake = dir.path().join("epiclang");
+    fs::write(&fake, "#!/bin/sh\n/bin/sleep 20\n").unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
+    let _path = PathGuard::set(dir.path()); // ne résout que le faux epiclang
+
+    let t = std::time::Instant::now();
+    let _ = seeyou::norme::official::epiclang_available();
+    assert!(
+        t.elapsed() < std::time::Duration::from_secs(10),
+        "probe sans timeout : {:?} (borne 5 s attendue)",
+        t.elapsed()
+    );
 }
 
 // ----------------------------------------------------------------

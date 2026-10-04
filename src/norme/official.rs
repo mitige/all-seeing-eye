@@ -4,9 +4,17 @@
 //! Chaque fichier est analysé dans le cwd = racine du rendu (pour que
 //! les includes relatifs fonctionnent), avec un chemin RELATIF — la
 //! sortie banana préfixe alors les fautes du chemin relatif, tel quel
-//! dans le rapport. L'exit code reste 0 même avec des warnings ; les
-//! lignes de contexte (`   6 | ...`) et le bilan (`N warnings
-//! generated.`) ne matchent pas la regex et sont ignorés.
+//! dans le rapport. Les `-I*`/`-D*` des cflags de la batterie sont
+//! forwardés à l'invocation : sans eux, un source qui inclut un header
+//! du projet échouerait en « file not found ». Les autres flags sont
+//! ignorés — inutiles en syntax-only, et un `-Werror` forwardé ferait
+//! basculer l'exit code à 1 sur de simples warnings banana.
+//!
+//! L'exit code reste 0 même avec des warnings ; les lignes de
+//! contexte (`   6 | ...`) et le bilan (`N warnings generated.`) ne
+//! matchent pas la regex et sont ignorés. Un exit ≠ 0 (erreur clang,
+//! include manquant, source non-UTF8) produit une note « analyse
+//! partielle » — check KO visible, sans faire échouer l'étape.
 
 use crate::exec::{run_capture, ExecStatus, Limits};
 use crate::norme::{NormeFault, Severity};
@@ -31,13 +39,23 @@ static BANANA_RE: LazyLock<Regex> = LazyLock::new(|| {
     .expect("regex banana invalide")
 });
 
+/// Timeout de la probe `epiclang --version` : un epiclang pendu ne
+/// doit pas figer l'étape.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// `true` si `epiclang --version` est lançable (présence sur la
-/// machine, via le PATH).
+/// machine, via le PATH). Probe bornée à [`PROBE_TIMEOUT`] via
+/// [`run_capture`].
 pub fn epiclang_available() -> bool {
-    std::process::Command::new("epiclang")
-        .arg("--version")
-        .output()
-        .is_ok()
+    run_capture(
+        Path::new("epiclang"),
+        &["--version".to_string()],
+        "",
+        Path::new("."),
+        PROBE_TIMEOUT,
+        Limits::default(),
+    )
+    .is_ok()
 }
 
 /// Parse la sortie (stdout et/ou stderr) d'epiclang : une
@@ -63,22 +81,66 @@ pub fn parse_banana_output(output: &str) -> Vec<NormeFault> {
 /// Résultat de l'analyse epiclang d'un fichier.
 #[derive(Debug)]
 pub struct FileOutcome {
-    /// Fautes banana parsées (stdout + stderr).
+    /// Fautes banana parsées (stdout + stderr) — potentiellement
+    /// partielles quand `note` est posée.
     pub faults: Vec<NormeFault>,
-    /// Exécution anormale (timeout, signal) : la faute n'est pas dans
-    /// le code mais dans l'outil — l'étape le signale en check KO.
+    /// Exécution anormale (exit ≠ 0, signal, timeout) : la faute n'est
+    /// pas dans le code mais dans l'outil — l'étape le signale en
+    /// check KO.
     pub note: Option<String>,
+}
+
+/// Flags de la batterie pertinents pour l'analyse syntaxique : les
+/// `-I*` (chemins d'include) et `-D*` (macros), dans les deux formes
+/// (jointe `-Iinclude` ou en deux tokens `-I include`). Les `-W*` et
+/// autres restent ignorés : inutiles en `-fsyntax-only`, et un
+/// `-Werror` forwardé ferait échouer l'invocation sur de simples
+/// warnings banana.
+fn preprocessor_flags(cflags: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut it = cflags.iter();
+    while let Some(f) = it.next() {
+        if f == "-I" || f == "-D" {
+            out.push(f.clone());
+            if let Some(v) = it.next() {
+                out.push(v.clone());
+            }
+        } else if f.starts_with("-I") || f.starts_with("-D") {
+            out.push(f.clone());
+        }
+    }
+    out
+}
+
+/// Note d'exécution anormale : exit ≠ 0 (erreur clang, include
+/// manquant, source non-UTF8 — des fautes partielles ont pu être
+/// émises avant), signal, timeout. `None` si exit 0.
+fn note_for(status: ExecStatus) -> Option<String> {
+    match status {
+        ExecStatus::Exit(0) => None,
+        ExecStatus::Exit(n) => Some(format!("epiclang exit {n} — analyse partielle")),
+        ExecStatus::Signal(sig) => Some(format!("epiclang tué par le signal {sig}")),
+        ExecStatus::Timeout => Some(format!(
+            "epiclang timeout ({} s)",
+            EPICLANG_TIMEOUT.as_secs()
+        )),
+    }
 }
 
 /// Analyse `rel` (chemin relatif à `target`) via
 /// `epiclang -fsyntax-only`, cwd = `target`, borné à
-/// [`EPICLANG_TIMEOUT`]. Parse stderr ET stdout (les warnings banana
-/// vont sur stderr, calibré ; on parse les deux par robustesse).
-pub fn check_one(target: &Path, rel: &Path) -> Result<FileOutcome> {
+/// [`EPICLANG_TIMEOUT`], avec les flags préprocesseur (`-I*`/`-D*`)
+/// des cflags de la batterie forwardés. Parse stderr ET stdout (les
+/// warnings banana vont sur stderr, calibré ; on parse les deux par
+/// robustesse).
+pub fn check_one(target: &Path, rel: &Path, cflags: &[String]) -> Result<FileOutcome> {
     let rel_str = rel.to_string_lossy();
+    let mut args = vec!["-fsyntax-only".to_string()];
+    args.extend(preprocessor_flags(cflags));
+    args.push(rel_str.into_owned());
     let outcome = run_capture(
         Path::new("epiclang"),
-        &["-fsyntax-only".to_string(), rel_str.into_owned()],
+        &args,
         "",
         target,
         EPICLANG_TIMEOUT,
@@ -86,15 +148,10 @@ pub fn check_one(target: &Path, rel: &Path) -> Result<FileOutcome> {
     )?;
     let mut faults = parse_banana_output(&outcome.stderr);
     faults.extend(parse_banana_output(&outcome.stdout));
-    let note = match outcome.status {
-        ExecStatus::Exit(_) => None,
-        ExecStatus::Signal(sig) => Some(format!("epiclang tué par le signal {sig}")),
-        ExecStatus::Timeout => Some(format!(
-            "epiclang timeout ({} s)",
-            EPICLANG_TIMEOUT.as_secs()
-        )),
-    };
-    Ok(FileOutcome { faults, note })
+    Ok(FileOutcome {
+        faults,
+        note: note_for(outcome.status),
+    })
 }
 
 #[cfg(test)]
@@ -150,5 +207,41 @@ dirty.c:3:1: error: expected ';' after expression
 ";
         assert!(parse_banana_output(bruit).is_empty());
         assert!(parse_banana_output("").is_empty());
+    }
+
+    #[test]
+    fn preprocessor_flags_ne_garde_que_includes_et_defines() {
+        let f =
+            |v: &[&str]| preprocessor_flags(&v.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        // -W* et autres ignorés (inutiles en syntax-only ; -Werror
+        // ferait basculer l'exit code sur de simples warnings).
+        assert_eq!(
+            f(&["-Wall", "-Iinclude", "-Werror", "-DMY_FLAG=1", "-g"]),
+            vec!["-Iinclude", "-DMY_FLAG=1"]
+        );
+        // Forme en deux tokens : la valeur suit le flag.
+        assert_eq!(f(&["-I", "include", "-Wpedantic"]), vec!["-I", "include"]);
+        assert_eq!(f(&["-D", "MY_FLAG", "-O2"]), vec!["-D", "MY_FLAG"]);
+        assert!(f(&[]).is_empty());
+    }
+
+    #[test]
+    fn note_for_exit_zero_none_anomalie_some() {
+        assert_eq!(note_for(ExecStatus::Exit(0)), None);
+        assert_eq!(
+            note_for(ExecStatus::Exit(1)),
+            Some("epiclang exit 1 — analyse partielle".to_string())
+        );
+        assert_eq!(
+            note_for(ExecStatus::Signal(11)),
+            Some("epiclang tué par le signal 11".to_string())
+        );
+        assert_eq!(
+            note_for(ExecStatus::Timeout),
+            Some(format!(
+                "epiclang timeout ({} s)",
+                EPICLANG_TIMEOUT.as_secs()
+            ))
+        );
     }
 }
