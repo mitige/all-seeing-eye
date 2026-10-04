@@ -4,37 +4,21 @@ use seeyou::battery::Battery;
 use seeyou::engine::events::{Event, Step};
 use seeyou::engine::{run_pipeline, RunOpts};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::mpsc;
-use std::sync::Mutex;
 use tempfile::TempDir;
 
-/// `XDG_DATA_HOME` est process-global : les tests qui appellent
-/// `run_pipeline` (→ verdict → `report::save`) se sérialisent sur ce
-/// mutex (pattern de battery_parse.rs). Chaque binaire de test est un
-/// processus séparé : un mutex par fichier suffit.
-static XDG_MUTEX: Mutex<()> = Mutex::new(());
+mod common;
 
-/// Positionne `XDG_DATA_HOME` vers un tempdir et le restaure à sa
-/// valeur initiale au drop — un `cargo test` ne doit JAMAIS écraser le
+use common::{XdgGuard, XDG_MUTEX};
+
+/// Positionne `XDG_DATA_HOME` (process-global — les tests qui
+/// appellent `run_pipeline`, → verdict → `report::save`, se
+/// sérialisent sur [`XDG_MUTEX`]) et le restaure à sa valeur initiale
+/// au drop — un `cargo test` ne doit JAMAIS écraser le
 /// `~/.local/share/seeyou/last.{json,txt}` de l'utilisateur.
-struct XdgDataGuard(Option<std::ffi::OsString>);
-
-impl XdgDataGuard {
-    fn set(path: &Path) -> Self {
-        let ancien = std::env::var_os("XDG_DATA_HOME");
-        std::env::set_var("XDG_DATA_HOME", path);
-        Self(ancien)
-    }
-}
-
-impl Drop for XdgDataGuard {
-    fn drop(&mut self) {
-        match &self.0 {
-            Some(v) => std::env::set_var("XDG_DATA_HOME", v),
-            None => std::env::remove_var("XDG_DATA_HOME"),
-        }
-    }
+fn xdg_data(path: &std::path::Path) -> XdgGuard {
+    XdgGuard::set("XDG_DATA_HOME", path)
 }
 
 /// Batterie Functions minimale : une seule task.
@@ -82,7 +66,7 @@ fn pipeline_emet_7_step_started_dans_l_ordre_puis_run_finished() {
     // de l'utilisateur.
     let _lock = XDG_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
     let data = TempDir::new().unwrap();
-    let _xdg = XdgDataGuard::set(data.path());
+    let _xdg = xdg_data(data.path());
     let (_bat_dir, battery) = mini_battery();
     let target = TempDir::new().unwrap();
     // L'étape Prelim (Task 4) exige la présence des deliveries :
@@ -383,7 +367,7 @@ fn pipeline_non_verbose_vert_synthetise_les_records_unit() {
     // vide → 0 %, et le global tombe à 50 % alors que tout est OK.
     let _lock = XDG_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
     let data = TempDir::new().unwrap();
-    let _xdg = XdgDataGuard::set(data.path());
+    let _xdg = xdg_data(data.path());
 
     let bat_dir = TempDir::new().unwrap();
     let bat_path = bat_dir.path().join("moulinette.toml");
@@ -471,4 +455,61 @@ fn pipeline_non_verbose_vert_synthetise_les_records_unit() {
         ],
         "events synthétiques attendus (Started+Finished par test) : {events:?}"
     );
+}
+
+#[test]
+fn pipeline_survit_a_un_echec_de_sauvegarde_du_rapport() {
+    // Branche save-en-échec du verdict : `XDG_DATA_HOME` pointe vers
+    // un FICHIER régulier → create_dir_all(fichier/seeyou) échoue
+    // (NotADirectory) → save() KO. La sauvegarde est best-effort : le
+    // run survit, le rapport est quand même retourné ET émis, et
+    // l'erreur est relayée en LogLine Step::Verdict.
+    let _lock = XDG_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
+    let data = TempDir::new().unwrap();
+    let fichier = data.path().join("pas_un_dossier");
+    fs::write(&fichier, "x").unwrap();
+    let _xdg = xdg_data(&fichier);
+    let (_bat_dir, battery) = mini_battery();
+    let target = TempDir::new().unwrap();
+    fs::write(
+        target.path().join("my_putchar.c"),
+        "void my_putchar(char c);\n",
+    )
+    .unwrap();
+
+    let (tx, rx) = mpsc::channel();
+    let report = run_pipeline(&battery, target.path(), tx, &test_opts());
+    let events: Vec<Event> = rx.iter().collect();
+
+    // Le rapport est retourné, complet, malgré l'échec de sauvegarde.
+    assert_eq!(report.project, "mini_functions");
+    assert_eq!(report.steps.len(), 7);
+    // … et émis en dernier événement, comme toujours.
+    assert!(
+        matches!(events.last(), Some(Event::RunFinished { .. })),
+        "dernier événement attendu : RunFinished : {events:?}"
+    );
+    // L'erreur de sauvegarde est relayée, visible, jamais silencieuse.
+    let erreurs_save: Vec<&str> = events
+        .iter()
+        .filter_map(|e| match e {
+            Event::LogLine {
+                step: Step::Verdict,
+                line,
+            } => Some(line.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        erreurs_save.len(),
+        1,
+        "exactement une LogLine Verdict attendue : {events:?}"
+    );
+    assert!(
+        erreurs_save[0].contains("sauvegarde du rapport impossible"),
+        "message inattendu : {:?}",
+        erreurs_save[0]
+    );
+    // Rien n'a été écrit : le « data dir » est un fichier.
+    assert!(fichier.is_file(), "le fichier XDG ne doit pas bouger");
 }

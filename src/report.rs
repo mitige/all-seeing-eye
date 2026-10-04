@@ -225,7 +225,7 @@ fn statut_etape(sr: &StepReport, report: &Report) -> String {
         return "skipped".to_string();
     }
     match Step::from_name(&sr.step) {
-        Some(Step::Norme) if sr.ok => comptes_norme(&report.scores),
+        Some(Step::Norme) if sr.ok => comptes_norme(&report.norme),
         Some(Step::Unit | Step::Functional) => match score_groupe(report, &sr.step) {
             Some((passed, total, score)) => format!("{passed}/{total} ({score:.1}%)"),
             None => ok_ko(sr.ok),
@@ -240,13 +240,26 @@ fn ok_ko(ok: bool) -> String {
 }
 
 /// « 3 major, 12 minor » — sévérités non nulles dans l'ordre
-/// décroissant de gravité ; « clean » si aucune faute.
-fn comptes_norme(scores: &Scores) -> String {
+/// décroissant de gravité ; « clean » si aucune faute. Compté depuis
+/// `report.norme` (la source), JAMAIS depuis `scores.norme_*` : un
+/// rapport ancien re-rendu peut n'avoir pas de scores (champ ajouté
+/// plus tard, `serde(default)`) alors que ses fautes sont là.
+fn comptes_norme(norme: &[NormeFault]) -> String {
+    // fatal, major, minor, info — ordre décroissant de gravité.
+    let mut comptes = [0u32; 4];
+    for f in norme {
+        match f.severity {
+            Severity::Fatal => comptes[0] += 1,
+            Severity::Major => comptes[1] += 1,
+            Severity::Minor => comptes[2] += 1,
+            Severity::Info => comptes[3] += 1,
+        }
+    }
     let parties = [
-        (scores.norme_fatal, "fatal"),
-        (scores.norme_major, "major"),
-        (scores.norme_minor, "minor"),
-        (scores.norme_info, "info"),
+        (comptes[0], "fatal"),
+        (comptes[1], "major"),
+        (comptes[2], "minor"),
+        (comptes[3], "info"),
     ]
     .into_iter()
     .filter(|(n, _)| *n > 0)

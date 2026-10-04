@@ -112,3 +112,34 @@ pub enum Event {
         report: Box<Report>,
     },
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn name_from_name_roundtrip_sur_les_7_etapes() {
+        // `from_name` est l'inverse exact de `name` — le rendu du
+        // rapport (statut d'étape, regroupement des tests) s'appuie
+        // sur cette bijection via `StepReport.step`.
+        let sept = [
+            Step::Prelim,
+            Step::Build,
+            Step::Norme,
+            Step::Symbols,
+            Step::Unit,
+            Step::Functional,
+            Step::Verdict,
+        ];
+        for step in sept {
+            assert_eq!(
+                Step::from_name(step.name()),
+                Some(step),
+                "roundtrip cassé pour {step:?}"
+            );
+        }
+        // Nom inconnu : None — jamais de repli silencieux.
+        assert_eq!(Step::from_name("inconnu"), None);
+        assert_eq!(Step::from_name(""), None);
+    }
+}

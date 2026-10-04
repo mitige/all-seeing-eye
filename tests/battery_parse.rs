@@ -3,32 +3,18 @@
 use seeyou::battery::model::ProjectType;
 use seeyou::battery::Battery;
 use std::fs;
-use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::path::PathBuf;
 use tempfile::TempDir;
 
-/// `XDG_CONFIG_HOME` est process-global : tous les tests qui y touchent
-/// (directement ou via `discover`) se sérialisent sur ce mutex.
-static XDG_MUTEX: Mutex<()> = Mutex::new(());
+mod common;
 
-/// Positionne `XDG_CONFIG_HOME` et le restaure à sa valeur initiale au drop.
-struct XdgConfigGuard(Option<std::ffi::OsString>);
+use common::{XdgGuard, XDG_MUTEX};
 
-impl XdgConfigGuard {
-    fn set(path: &Path) -> Self {
-        let ancien = std::env::var_os("XDG_CONFIG_HOME");
-        std::env::set_var("XDG_CONFIG_HOME", path);
-        Self(ancien)
-    }
-}
-
-impl Drop for XdgConfigGuard {
-    fn drop(&mut self) {
-        match &self.0 {
-            Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
-            None => std::env::remove_var("XDG_CONFIG_HOME"),
-        }
-    }
+/// Positionne `XDG_CONFIG_HOME` (process-global — les tests qui y
+/// touchent, directement ou via `discover`, se sérialisent sur
+/// [`XDG_MUTEX`]) et le restaure à sa valeur initiale au drop.
+fn xdg_config(path: &std::path::Path) -> XdgGuard {
+    XdgGuard::set("XDG_CONFIG_HOME", path)
 }
 
 /// Crée `<config>/.config/seeyou/batteries`, y écrit `files`
@@ -481,7 +467,7 @@ fn discover_erreur_si_aucune_batterie() {
     // Config vide (pas de .config/seeyou/batteries) : env hermétique,
     // indépendante de la machine hôte.
     let config = TempDir::new().unwrap();
-    let _xdg = XdgConfigGuard::set(&config.path().join(".config"));
+    let _xdg = xdg_config(&config.path().join(".config"));
     let dir = TempDir::new().unwrap(); // dossier vide, nom aléatoire
 
     let err = Battery::discover(dir.path()).unwrap_err();
@@ -514,7 +500,7 @@ type = "binary"
 fn discover_tier2_trouve_batterie_par_nom_de_dossier() {
     let _lock = XDG_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
     let config = TempDir::new().unwrap();
-    let _xdg = XdgConfigGuard::set(&config.path().join(".config"));
+    let _xdg = xdg_config(&config.path().join(".config"));
     let batteries = setup_config_batteries(&config, &[("mysh.toml", MYSH_TOML)]);
     let work = TempDir::new().unwrap();
     let projet = work.path().join("mysh");
@@ -530,7 +516,7 @@ fn discover_tier2_trouve_batterie_par_nom_de_dossier() {
 fn discover_tier2_nom_non_matchant_erreur() {
     let _lock = XDG_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
     let config = TempDir::new().unwrap();
-    let _xdg = XdgConfigGuard::set(&config.path().join(".config"));
+    let _xdg = xdg_config(&config.path().join(".config"));
     setup_config_batteries(&config, &[("mysh.toml", MYSH_TOML)]);
     let work = TempDir::new().unwrap();
     let projet = work.path().join("autre_projet");
@@ -552,7 +538,7 @@ fn discover_tier2_nom_non_matchant_erreur() {
 fn discover_tier2_batterie_invalide_mentionnee() {
     let _lock = XDG_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
     let config = TempDir::new().unwrap();
-    let _xdg = XdgConfigGuard::set(&config.path().join(".config"));
+    let _xdg = xdg_config(&config.path().join(".config"));
     setup_config_batteries(&config, &[("cassee.toml", CASSEE_TOML)]);
     let work = TempDir::new().unwrap();
     let projet = work.path().join("projet_inconnu");

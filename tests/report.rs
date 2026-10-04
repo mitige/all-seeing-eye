@@ -5,33 +5,19 @@ use seeyou::norme::{NormeFault, Severity};
 use seeyou::report::{
     compute_scores, render_text, render_text_at, save, Report, Scores, StepReport, TestRecord,
 };
-use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
 use tempfile::TempDir;
 
-/// `XDG_DATA_HOME` est process-global : les tests qui y touchent se
-/// sérialisent sur ce mutex (pattern de battery_parse.rs).
-static XDG_MUTEX: Mutex<()> = Mutex::new(());
+mod common;
 
-/// Positionne `XDG_DATA_HOME` et le restaure à sa valeur initiale au drop.
-struct XdgDataGuard(Option<std::ffi::OsString>);
+use common::{XdgGuard, XDG_MUTEX};
 
-impl XdgDataGuard {
-    fn set(path: &Path) -> Self {
-        let ancien = std::env::var_os("XDG_DATA_HOME");
-        std::env::set_var("XDG_DATA_HOME", path);
-        Self(ancien)
-    }
-}
-
-impl Drop for XdgDataGuard {
-    fn drop(&mut self) {
-        match &self.0 {
-            Some(v) => std::env::set_var("XDG_DATA_HOME", v),
-            None => std::env::remove_var("XDG_DATA_HOME"),
-        }
-    }
+/// Positionne `XDG_DATA_HOME` (process-global — les tests qui y
+/// touchent se sérialisent sur [`XDG_MUTEX`]) et le restaure à sa
+/// valeur initiale au drop.
+fn xdg_data(path: &std::path::Path) -> XdgGuard {
+    XdgGuard::set("XDG_DATA_HOME", path)
 }
 
 /// StepReport compact pour les rapports construits à la main.
@@ -354,10 +340,97 @@ fn scores_norme_comptee_par_severite() {
 }
 
 #[test]
+fn render_record_criterion_synthetique_failed_diff_vide_fallback() {
+    // Record synthétique criterion (Synthesis non-verbose, Task 10) en
+    // échec : `diff` vide. La ligne affichée porte le fallback
+    // « écart de sortie » — jamais des parenthèses vides.
+    let mut report = report_golden();
+    // Champ test = nom + espace + points = 18 caractères (3 minimum) :
+    // « criterion #2 » (12) → 5 points de calage.
+    let points = |nom: &str| ".".repeat(18usize.saturating_sub(nom.chars().count() + 1).max(3));
+    report.tests = vec![rec("functional", "criterion #2", "failed", Some(""), None)];
+    let rendu = render_text_at(&report, SystemTime::UNIX_EPOCH);
+    let ligne = format!(
+        "✗ criterion #2 {} FAILED (écart de sortie)\n",
+        points("criterion #2")
+    );
+    assert!(
+        rendu.contains(&ligne),
+        "fallback « écart de sortie » attendu : {rendu}"
+    );
+    // Diff absent (None) : même fallback.
+    report.tests = vec![rec("functional", "criterion #3", "failed", None, None)];
+    let rendu = render_text_at(&report, SystemTime::UNIX_EPOCH);
+    let ligne = format!(
+        "✗ criterion #3 {} FAILED (écart de sortie)\n",
+        points("criterion #3")
+    );
+    assert!(
+        rendu.contains(&ligne),
+        "fallback « écart de sortie » attendu (diff None) : {rendu}"
+    );
+}
+
+#[test]
+fn render_detail_long_tronque_a_40_avec_ellipse() {
+    // Première ligne de diff > 40 caractères : tronquée à 40 + « … ».
+    let diff_long = "x".repeat(60);
+    let mut report = report_golden();
+    report.tests = vec![rec("functional", "long", "failed", Some(&diff_long), None)];
+    let rendu = render_text_at(&report, SystemTime::UNIX_EPOCH);
+    let tronque = format!(
+        "✗ long {} FAILED ({}…)\n",
+        ".".repeat(13), // champ test 18 : « long » (4) + espace + 13 points
+        "x".repeat(40)
+    );
+    assert!(
+        rendu.contains(&tronque),
+        "détail tronqué à 40 + … attendu : {rendu}"
+    );
+    // Le 41e caractère ne passe pas : aucune suite de 41 x.
+    assert!(
+        !rendu.contains(&"x".repeat(41)),
+        "détail non tronqué : {rendu}"
+    );
+    // Frontière exacte : 40 caractères → PAS d'ellipse.
+    let diff_40 = "y".repeat(40);
+    report.tests = vec![rec("functional", "bord", "failed", Some(&diff_40), None)];
+    let rendu = render_text_at(&report, SystemTime::UNIX_EPOCH);
+    assert!(
+        rendu.contains(&format!("FAILED ({})\n", "y".repeat(40))),
+        "40 caractères pile : pas d'ellipse : {rendu}"
+    );
+}
+
+#[test]
+fn render_norme_compte_depuis_les_fautes_pas_les_scores() {
+    // Minor 4 : un rapport ancien (JSON écrit avant le champ `scores`,
+    // re-rendu) a `scores.norme_*` à zéro via serde(default) alors que
+    // `norme` porte les fautes — le statut de l'étape Norme doit être
+    // dérivé de `report.norme`, jamais des scores.
+    let mut report = report_golden();
+    report.scores = Scores::default();
+    let rendu = render_text_at(&report, SystemTime::UNIX_EPOCH);
+    assert!(
+        rendu.contains("▸ Norme ......................... 3 major, 12 minor\n"),
+        "comptes dérivés de report.norme attendus : {rendu}"
+    );
+    // Réciproque : norme vide → « clean », même si les scores
+    // rapporteraient des fautes (scores mensongers).
+    report.norme = Vec::new();
+    report.scores.norme_major = 7;
+    let rendu = render_text_at(&report, SystemTime::UNIX_EPOCH);
+    assert!(
+        rendu.contains("▸ Norme ......................... clean\n"),
+        "norme vide → clean, quels que soient les scores : {rendu}"
+    );
+}
+
+#[test]
 fn save_ecrit_last_json_et_last_txt() {
     let _lock = XDG_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
     let data = TempDir::new().unwrap();
-    let _xdg = XdgDataGuard::set(data.path());
+    let _xdg = xdg_data(data.path());
 
     let mut report = report_golden();
     report.project = "json_txt".to_string();
