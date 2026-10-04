@@ -22,6 +22,7 @@ use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
+use std::sync::LazyLock;
 use std::time::Duration;
 
 /// Timeout d'une invocation de `make -n` (vérification d'une règle).
@@ -141,10 +142,29 @@ fn check_forbidden_files(target: &Path, c: &mut Collect) -> bool {
 /// Regex stricte d'une ligne d'infraction banana :
 /// `./FICHIER: [Banana] [SEV] MSG (CODE)`. Les lignes de service
 /// (« Checking delivery files… », « No infractions found ») ne
-/// commencent pas par `./` et ne matchent donc jamais.
-fn banana_line() -> Regex {
+/// commencent pas par `./` et ne matchent donc jamais. Compilée une
+/// fois pour toutes (LazyLock), pas à chaque appel.
+static BANANA_LINE_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^\./.+: \[Banana\] \[[A-Za-z]+\] .+ \([A-Z]-[A-Z0-9]+\)$")
         .expect("regex banana invalide")
+});
+
+/// Cible entre guillemets du message GNU make « No rule to make
+/// target '<cible>'[, needed by '<parent>'] ». Le message est
+/// stable : LC_ALL=C est forcé dans [`probe_rule`] — le matcher ne
+/// dépend pas de la locale de la machine.
+static NO_RULE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"No rule to make target '([^']+)'").expect("regex no-rule invalide")
+});
+
+/// Extrait borné d'un flux d'erreur : trimmé puis tronqué à `max`
+/// caractères (sur une frontière UTF-8), « … » final si coupé.
+fn excerpt(s: &str, max: usize) -> String {
+    let s = s.trim();
+    match s.char_indices().nth(max) {
+        None => s.to_string(),
+        Some((idx, _)) => format!("{}…", &s[..idx]),
+    }
 }
 
 /// `true` si l'erreur vient d'un binaire introuvable (ENOENT), en
@@ -180,11 +200,10 @@ fn check_banana(target: &Path, c: &mut Collect) -> Option<bool> {
             ));
         }
     };
-    let re = banana_line();
     let mut found = false;
     let mut ok = true;
     for line in outcome.stdout.lines() {
-        if re.is_match(line) {
+        if BANANA_LINE_RE.is_match(line) {
             found = true;
             ok &= c.check("banana-check-repo", false, line.to_string());
         }
@@ -204,10 +223,85 @@ fn check_banana(target: &Path, c: &mut Collect) -> Option<bool> {
     Some(ok)
 }
 
+/// Verdict d'une sonde `make -n <rule>`, avant émission du check.
+enum RuleProbe {
+    /// Exit 0 : la règle existe et make sait la développer.
+    Present,
+    /// « No rule to make target '<rule>' » : la cible entre
+    /// guillemets est la règle sondée elle-même — elle n'existe pas.
+    MissingRule,
+    /// « No rule to make target '<cible>', needed by ... » : la règle
+    /// existe, mais un de ses prérequis est irrésoluble.
+    MissingPrereq(String),
+    /// make ne parvient pas à évaluer le Makefile (erreur de parse,
+    /// timeout, signal) : toute autre sonde donnerait le même verdict
+    /// au prix d'un timeout chacune — le check est émis puis les
+    /// sondes restantes sont court-circuitées.
+    MakefileIlisible(String),
+    /// L'outil est indisponible (spawn en échec, make introuvable via
+    /// env) : échec de sonde, pas un verdict sur le Makefile — pas de
+    /// court-circuit.
+    SondeEchouee(String),
+}
+
+/// Sonde une règle via `env LC_ALL=C make -n <rule>` borné à
+/// [`MAKE_TIMEOUT`]. LC_ALL=C est forcé en passant par `/usr/bin/env`
+/// ([`run_capture`] n'a pas de paramètre d'environnement) : le stderr
+/// matché par [`NO_RULE_RE`] ne doit pas dépendre de la locale de la
+/// machine.
+fn probe_rule(dir: &Path, rule: &str) -> RuleProbe {
+    let args = vec![
+        "LC_ALL=C".to_string(),
+        "make".to_string(),
+        "-n".to_string(),
+        rule.to_string(),
+    ];
+    let outcome = match run_capture(
+        Path::new("/usr/bin/env"),
+        &args,
+        "",
+        dir,
+        MAKE_TIMEOUT,
+        Limits::default(),
+    ) {
+        Ok(o) => o,
+        Err(e) => return RuleProbe::SondeEchouee(format!("make -n {rule} impossible : {e:#}")),
+    };
+    match outcome.status {
+        ExecStatus::Exit(0) => RuleProbe::Present,
+        // 126/127 viennent d'env (commande introuvable ou non
+        // exécutable) : make lui-même ne rend que 0 ou 2.
+        ExecStatus::Exit(code @ (126 | 127)) => RuleProbe::SondeEchouee(format!(
+            "make introuvable ou inexécutable via /usr/bin/env (exit {code})"
+        )),
+        ExecStatus::Exit(_) => {
+            match NO_RULE_RE
+                .captures(&outcome.stderr)
+                .map(|cap| cap[1].to_string())
+            {
+                Some(cible) if cible == rule => RuleProbe::MissingRule,
+                Some(cible) => RuleProbe::MissingPrereq(cible),
+                None => RuleProbe::MakefileIlisible(format!(
+                    "makefile invalide: {}",
+                    excerpt(&outcome.stderr, 200)
+                )),
+            }
+        }
+        ExecStatus::Signal(sig) => {
+            RuleProbe::MakefileIlisible(format!("make tué par le signal {sig} sur la règle {rule}"))
+        }
+        ExecStatus::Timeout => {
+            RuleProbe::MakefileIlisible(format!("make timeout sur la règle {rule}"))
+        }
+    }
+}
+
 /// Checks Binary : présence du Makefile à la racine, puis existence
-/// de chaque règle (`make -n <rule>` ; « No rule to make target » sur
-/// stderr = règle manquante — l'exit code de `-q` serait trompeur,
-/// cf. « pas à jour »).
+/// de chaque règle (`make -n <rule>`). Le verdict repose sur le
+/// statut d'exécution : exit 0 = OK, tout le reste (exit ≠ 0, signal,
+/// timeout, spawn en échec) = KO — un « No rule to make target »
+/// n'est plus qu'un détail de KO parmi d'autres, et son contenu entre
+/// guillemets distingue la règle manquante du prérequis irrésoluble.
 fn check_makefile(ctx: &PipelineContext, c: &mut Collect) -> bool {
     if !ctx.target.join("Makefile").is_file() {
         // Sans Makefile, chaque sonde répondrait « No rule to make
@@ -215,32 +309,47 @@ fn check_makefile(ctx: &PipelineContext, c: &mut Collect) -> bool {
         return c.check("makefile", false, "missing Makefile".to_string());
     }
     let mut ok = c.check("makefile", true, "Makefile present".to_string());
-    for rule in &ctx.battery.project.makefile_rules {
-        let args = vec!["-n".to_string(), rule.clone()];
-        match run_capture(
-            Path::new("make"),
-            &args,
-            "",
-            &ctx.target,
-            MAKE_TIMEOUT,
-            Limits::default(),
-        ) {
-            Ok(o) if o.stderr.contains("No rule to make target") => {
+    let rules = &ctx.battery.project.makefile_rules;
+    for (i, rule) in rules.iter().enumerate() {
+        match probe_rule(&ctx.target, rule) {
+            RuleProbe::Present => {
+                ok &= c.check("makefile rules", true, format!("rule {rule} present"));
+            }
+            RuleProbe::MissingRule => {
                 ok &= c.check(
                     "makefile rules",
                     false,
                     format!("missing makefile rule: {rule}"),
                 );
             }
-            Ok(_) => {
-                ok &= c.check("makefile rules", true, format!("rule {rule} present"));
-            }
-            Err(e) => {
+            RuleProbe::MissingPrereq(cible) => {
                 ok &= c.check(
                     "makefile rules",
                     false,
-                    format!("make -n {rule} impossible : {e:#}"),
+                    format!("prérequis irrésoluble: {cible} (règle {rule})"),
                 );
+            }
+            RuleProbe::MakefileIlisible(detail) => {
+                // Le Makefile ne peut pas être évalué : les sondes
+                // suivantes échoueraient à l'identique en payant
+                // chacune le timeout — un seul KO global pour les
+                // règles restantes.
+                ok &= c.check("makefile rules", false, detail);
+                let reste = &rules[i + 1..];
+                if !reste.is_empty() {
+                    ok &= c.check(
+                        "makefile rules",
+                        false,
+                        format!(
+                            "makefile illisible : règles {} non sondées",
+                            reste.join(", ")
+                        ),
+                    );
+                }
+                break;
+            }
+            RuleProbe::SondeEchouee(detail) => {
+                ok &= c.check("makefile rules", false, detail);
             }
         }
     }
@@ -255,8 +364,9 @@ fn normalize_ws(s: &str) -> String {
 }
 
 /// Checks Functions : chaque `task.delivery` doit exister à la racine
-/// du repo ; si la task annonce un prototype, la signature normalisée
-/// doit apparaître dans le contenu normalisé du fichier.
+/// du repo et être lisible ; si la task annonce un prototype, la
+/// signature normalisée doit apparaître dans le contenu normalisé du
+/// fichier.
 fn check_functions(ctx: &PipelineContext, c: &mut Collect) -> bool {
     let mut ok = true;
     for task in &ctx.battery.task {
@@ -271,6 +381,16 @@ fn check_functions(ctx: &PipelineContext, c: &mut Collect) -> bool {
         }
         ok &= c.check("delivery", true, format!("{} present", task.delivery));
         let Some(sig) = &task.prototype else {
+            // Pas de prototype annoncé : on sonde au moins la
+            // lisibilité — un rendu chmod 000 passerait sinon pour
+            // acceptable.
+            if let Err(e) = fs::File::open(&path) {
+                ok &= c.check(
+                    "delivery",
+                    false,
+                    format!("{} unreadable: {e}", task.delivery),
+                );
+            }
             continue;
         };
         match fs::read_to_string(&path) {

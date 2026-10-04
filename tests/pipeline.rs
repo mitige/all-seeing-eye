@@ -97,6 +97,22 @@ fn pipeline_emet_7_step_started_dans_l_ordre_puis_run_finished() {
         .count();
     assert_eq!(finished_ok, 7);
     assert!(events.len() >= 15, "événements manquants : {events:?}");
+    // L'étape Prelim a réellement émis des checks — sinon le filtre
+    // ci-dessous (tout CheckFinished doit être Prelim et OK) ne
+    // prouverait rien : une absence totale passerait inaperçue.
+    let prelim_checks = events
+        .iter()
+        .filter(|e| {
+            matches!(
+                e,
+                Event::CheckFinished {
+                    step: Step::Prelim,
+                    ..
+                }
+            )
+        })
+        .count();
+    assert!(prelim_checks > 0, "aucun CheckFinished Prelim : {events:?}");
     for e in &events {
         match e {
             Event::StepStarted { .. } | Event::StepFinished { .. } | Event::RunFinished { .. } => {}

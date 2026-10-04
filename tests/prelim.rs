@@ -8,6 +8,7 @@ use seeyou::battery::Battery;
 use seeyou::engine::events::{Event, Step};
 use seeyou::engine::prelim;
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use tempfile::TempDir;
@@ -312,5 +313,140 @@ fn banana_check_repo_signale_chaque_ligne() {
             .iter()
             .any(|(name, ok, _)| name == "banana-check-repo" && *ok),
         "check banana OK absent sur clean_repo : {checks:?}"
+    );
+}
+
+#[test]
+fn bad_makefile_regles_ko_et_court_circuit() {
+    let (_bat_dir, battery) = load_battery(BINARY_TOML);
+    let (ok, events) = run_prelim(&battery, &fixture("bad_makefile"));
+
+    assert!(!ok, "prelim devrait échouer sur un Makefile invalide");
+    let checks = extract_checks(&events);
+    // Le Makefile est bien présent : son check reste OK.
+    assert!(checks.iter().any(|(name, ok, _)| name == "makefile" && *ok));
+    let rules: Vec<&(String, bool, String)> = checks
+        .iter()
+        .filter(|(name, _, _)| name == "makefile rules")
+        .collect();
+    // Aucune règle ne peut passer OK : le Makefile ne parse pas.
+    assert!(
+        !rules.is_empty() && rules.iter().all(|(_, ok, _)| !*ok),
+        "une règle passe OK sur un Makefile invalide : {checks:?}"
+    );
+    // La première sonde rapporte l'erreur de parse avec un extrait de
+    // stderr (LC_ALL=C : le message « missing separator » est stable).
+    assert!(
+        rules
+            .iter()
+            .any(|(_, _, d)| d.starts_with("makefile invalide:") && d.contains("missing separator")),
+        "détail 'makefile invalide' absent ou sans extrait : {rules:?}"
+    );
+    // Court-circuit : 1 KO de parse + 1 KO global « makefile
+    // illisible », pas une sonde par règle (qui paieraient chacune le
+    // timeout pour le même verdict).
+    assert_eq!(
+        rules.len(),
+        2,
+        "les règles restantes ne devraient pas être sondées : {rules:?}"
+    );
+    let global = &rules[1].2;
+    assert!(
+        global.contains("makefile illisible")
+            && global.contains("clean")
+            && global.contains("fclean")
+            && global.contains("re"),
+        "KO global 'makefile illisible' absent ou incomplet : {rules:?}"
+    );
+}
+
+#[test]
+fn slow_makefile_timeout_ko_et_court_circuit() {
+    let (_bat_dir, battery) = load_battery(BINARY_TOML);
+    // $(shell sleep 60) à l'évaluation : chaque sonde paierait le
+    // timeout (10 s) — le court-circuit borne le coût à une sonde.
+    let (ok, events) = run_prelim(&battery, &fixture("slow_makefile"));
+
+    assert!(!ok, "un Makefile dont l'évaluation bloque doit être KO");
+    let checks = extract_checks(&events);
+    let rules: Vec<&(String, bool, String)> = checks
+        .iter()
+        .filter(|(name, _, _)| name == "makefile rules")
+        .collect();
+    assert!(
+        rules.iter().all(|(_, ok, _)| !*ok),
+        "une règle passe OK malgré le timeout : {checks:?}"
+    );
+    assert!(
+        rules
+            .iter()
+            .any(|(_, _, d)| d.contains("make timeout sur la règle all")),
+        "détail 'make timeout' absent : {rules:?}"
+    );
+    assert_eq!(
+        rules.len(),
+        2,
+        "timeout non court-circuité (4 sondes × 10 s) : {rules:?}"
+    );
+}
+
+#[test]
+fn prerequis_irresoluble_n_est_pas_regle_manquante() {
+    let (_bat_dir, battery) = load_battery(BINARY_TOML);
+    let (ok, events) = run_prelim(&battery, &fixture("missing_prereq"));
+
+    assert!(!ok, "un prérequis sans règle doit faire échouer prelim");
+    let checks = extract_checks(&events);
+    // « No rule to make target 'dep.txt', needed by 'all' » : la cible
+    // entre guillemets est un prérequis, pas la règle sondée — all et
+    // re (qui dépend de all) existent bel et bien.
+    for rule in ["all", "re"] {
+        let want = format!("prérequis irrésoluble: dep.txt (règle {rule})");
+        assert!(
+            checks
+                .iter()
+                .any(|(name, ok, d)| name == "makefile rules" && !*ok && *d == want),
+            "prérequis de {rule} absent ou mal classifié : {checks:?}"
+        );
+    }
+    assert!(
+        !checks
+            .iter()
+            .any(|(_, _, d)| d.contains("missing makefile rule")),
+        "prérequis confondu avec une règle manquante : {checks:?}"
+    );
+    // clean et fclean ne dépendent pas de dep.txt : OK — et leur
+    // présence prouve qu'un prérequis irrésoluble ne court-circuite
+    // pas les sondes suivantes.
+    for rule in ["clean", "fclean"] {
+        let want = format!("rule {rule} present");
+        assert!(
+            checks
+                .iter()
+                .any(|(name, ok, d)| name == "makefile rules" && *ok && *d == want),
+            "règle {rule} devrait passer OK : {checks:?}"
+        );
+    }
+}
+
+#[test]
+fn functions_delivery_illisible_sans_prototype() {
+    let (_bat_dir, battery) = load_battery(FUNCTIONS_TOML); // ex01 sans prototype
+    let target = TempDir::new().unwrap();
+    let path = target.path().join("my_putchar.c");
+    fs::write(&path, "void my_putchar(char c);\n").unwrap();
+    // chmod 000 : présent mais illisible → KO même sans prototype à
+    // vérifier (sinon un rendu vide de droits passerait inaperçu).
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
+
+    let (ok, events) = run_prelim(&battery, target.path());
+    assert!(!ok, "une delivery illisible devrait faire échouer prelim");
+    let checks = extract_checks(&events);
+    assert!(
+        checks.iter().any(|(name, ok, d)| name == "delivery"
+            && !*ok
+            && d.contains("my_putchar.c")
+            && d.contains("unreadable")),
+        "delivery illisible non signalée : {checks:?}"
     );
 }
