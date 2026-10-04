@@ -191,3 +191,8 @@ tests/          intégration par étape, E2E pipeline, fixtures
 - **Linux only** : rlimits, `setsid`, kill de groupe de processus. Un
   descendant qui appelle lui-même `setsid` échappe au kill au timeout
   (fuite bornée à sa durée de vie, jamais de blocage).
+- **Pas de `r` (relancer) dans le TUI en V1** : relance la commande.
+- **Exit code 0 possible avec des fautes de norme** : le score global ne
+  pondère que les groupes de tests ; la norme est rapportée, pas bloquante
+  (comme la vraie moulinette qui note le style à part). Pour gater une CI
+  sur la norme, lis `last.json` (`norme` + `scores.norme_*`).
