@@ -102,6 +102,10 @@ impl Battery {
         //    ([`load_embedded`]) n'a lieu qu'en cas de match — le
         //    `root` doit être un vrai dossier (harness, expected), la
         //    batterie retournée détient le TempDir d'extraction.
+        //    Asymétrie assumée avec le tier 2 : là, chaque TOML est
+        //    chargé ET validé (Battery::load) ; ici on sonde le nom
+        //    SANS valider (from_str seul) — la validation complète
+        //    n'a lieu qu'en cas de match, dans load_embedded.
         for (nom, contenu) in embedded_batteries() {
             match toml::from_str::<Battery>(contenu) {
                 Ok(sonde) if sonde.project.name == dir_name => match load_embedded(nom) {

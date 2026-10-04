@@ -166,6 +166,19 @@ fn boucle(
 /// SANS `RunFinished` marque le pipeline mort — état visible, on
 /// cesse d'attendre. True si un redraw est nécessaire.
 fn drain(rx: &mpsc::Receiver<Event>, app: &mut App) -> bool {
+    drain_borne(rx, app, DRAIN_MAX_EVENTS, DRAIN_MAX_DUREE)
+}
+
+/// Corps de [`drain`], bornes paramétrées : les tests injectent une
+/// borne temporelle très large pour valider la borne en NOMBRE
+/// d'events sans dépendre du timing wall — sous charge, 5 ms peuvent
+/// s'écouler avant les 1000 events et rendaient le test flaky.
+fn drain_borne(
+    rx: &mpsc::Receiver<Event>,
+    app: &mut App,
+    max_events: usize,
+    max_duree: Duration,
+) -> bool {
     let debut = Instant::now();
     let mut recu = false;
     let mut n = 0;
@@ -187,7 +200,7 @@ fn drain(rx: &mpsc::Receiver<Event>, app: &mut App) -> bool {
                 break;
             }
         }
-        if n >= DRAIN_MAX_EVENTS || debut.elapsed() >= DRAIN_MAX_DUREE {
+        if n >= max_events || debut.elapsed() >= max_duree {
             break;
         }
     }
@@ -383,18 +396,25 @@ mod tests {
             })
             .unwrap();
         }
-        assert!(drain(&rx, &mut app));
+        // Bornes injectées : 1000 events, temps très large — le test
+        // valide la borne en NOMBRE d'events, jamais le timing wall
+        // (la borne de 5 ms de production le rendait flaky sous
+        // charge : le reliquat variait selon l'ordonnancement).
+        let drain_1000 = |rx: &mpsc::Receiver<Event>, app: &mut App| {
+            drain_borne(rx, app, 1000, Duration::from_secs(60))
+        };
+        assert!(drain_1000(&rx, &mut app));
         assert_eq!(
             app.step(Step::Build).checks.len(),
             1000,
             "le drain doit sortir après 1000 events (clavier non affamé)"
         );
         // Reliquat intact : le tick suivant en absorbe 1000 de plus.
-        assert!(drain(&rx, &mut app));
+        assert!(drain_1000(&rx, &mut app));
         assert_eq!(app.step(Step::Build).checks.len(), 2000);
         // …et les ticks d'après absorbent tout, rien n'est perdu.
         for _ in 0..8 {
-            assert!(drain(&rx, &mut app));
+            assert!(drain_1000(&rx, &mut app));
         }
         assert_eq!(app.step(Step::Build).checks.len(), 10_000);
     }

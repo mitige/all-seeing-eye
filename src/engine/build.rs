@@ -303,12 +303,21 @@ fn build_binary(ctx: &mut PipelineContext, dir: &Path, c: &mut Collect) -> bool 
     c.check("binary", true, format!("binary {name} present"))
 }
 
-/// `true` si epiclang est installé (sonde `--version`).
+/// `true` si epiclang est installé : sonde `--version` bornée à 5 s
+/// via [`run_capture`] — le même traitement que la sonde epiclang de
+/// la norme ([`crate::norme::official::epiclang_available`]) et que
+/// les sondes compilateur du CLI : un binaire pendu ne doit pas figer
+/// le pipeline.
 fn epiclang_present() -> bool {
-    std::process::Command::new("epiclang")
-        .arg("--version")
-        .output()
-        .is_ok()
+    run_capture(
+        Path::new("epiclang"),
+        &["--version".to_string()],
+        "",
+        Path::new("."),
+        Duration::from_secs(5),
+        Limits::default(),
+    )
+    .is_ok()
 }
 
 /// Compilateur des deliveries Functions : epiclang si demandé par les

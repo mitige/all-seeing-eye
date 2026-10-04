@@ -81,6 +81,10 @@ const DIFF_ABRIDGE_TAIL: usize = 50;
 /// jamais de full-dump de plusieurs Mio.
 const DIFF_MAX_LINES: usize = 500;
 
+/// Borne de rendu du diff, en octets : le cap en lignes ne suffit
+/// pas — 500 lignes de plusieurs Mio chacune resteraient géantes.
+const DIFF_MAX_BYTES: usize = 256 * 1024;
+
 /// Étape 6 du pipeline : tests fonctionnels. Renvoie `true` ssi tous
 /// les tests sont Passed (désactivation exceptée).
 pub fn run(ctx: &mut PipelineContext, tx: &mpsc::Sender<Event>) -> bool {
@@ -309,13 +313,15 @@ fn verdict_sortie_tronquee(
 /// newline final » — sinon le manque du newline final serait
 /// invisible (« abc\n » vs « abc »).
 ///
-/// Trois bornes protègent le rendu d'entrées arbitrairement grosses :
+/// Quatre bornes protègent le rendu d'entrées arbitrairement grosses :
 /// - au-delà d'[`DIFF_ABRIDGE_BYTES`] cumulés, les entrées sont
 ///   abrégées ([`abridge`]) AVANT le calcul ;
 /// - le calcul est borné par [`DIFF_DEADLINE`] (similar approxime
 ///   au-delà — le diff reste complet, non nécessairement minimal) ;
-/// - le rendu est capé à [`DIFF_MAX_LINES`] lignes (il est cloné dans
-///   l'event `TestFinished` et le `TestRecord` du rapport).
+/// - le rendu est capé à [`DIFF_MAX_LINES`] lignes puis à
+///   [`DIFF_MAX_BYTES`] octets (il est cloné dans l'event
+///   `TestFinished` et le `TestRecord` du rapport — le cap lignes
+///   seul laisserait passer 500 lignes géantes).
 ///
 /// Les caractères de contrôle des lignes sont échappés
 /// ([`escape_controls`]) : un `\r` sinon invisible rendrait un écart
@@ -349,32 +355,56 @@ fn render_diff(expected: &str, got: &str) -> String {
     if total > DIFF_MAX_LINES {
         let _ = writeln!(out, "… diff tronqué, {total} lignes au total …");
     }
+    if cap_octets(&mut out, DIFF_MAX_BYTES) {
+        let _ = writeln!(out, "\n… diff tronqué à {} Kio …", DIFF_MAX_BYTES / 1024);
+    }
     out
+}
+
+/// Tronque `out` à `max` octets (sur une frontière de caractère) si
+/// besoin. Renvoie `true` si tronqué.
+fn cap_octets(out: &mut String, max: usize) -> bool {
+    if out.len() <= max {
+        return false;
+    }
+    let mut fin = max;
+    while !out.is_char_boundary(fin) {
+        fin -= 1;
+    }
+    out.truncate(fin);
+    true
 }
 
 /// Abrège une entrée de diff géante : tête de [`DIFF_ABRIDGE_HEAD`]
 /// lignes, marqueur « … N lignes omises … », queue de
 /// [`DIFF_ABRIDGE_TAIL`] lignes. Une entrée déjà courte passe telle
 /// quelle.
+///
+/// Découpe par `split_inclusive('\n')` et NON `str::lines()` : ce
+/// dernier strippe le `\r` final de chaque ligne CRLF — le marqueur
+/// ␍ ([`escape_controls`]) doit survivre au chemin abrégé. Chaque
+/// tronçon garde sa terminaison : la concaténation tête + marqueur +
+/// queue est exacte, newline final compris.
 fn abridge(s: &str) -> Cow<'_, str> {
-    let total = s.lines().count();
+    let total = s.split_inclusive('\n').count();
     if total <= DIFF_ABRIDGE_HEAD + DIFF_ABRIDGE_TAIL {
         return Cow::Borrowed(s);
     }
     let omises = total - DIFF_ABRIDGE_HEAD - DIFF_ABRIDGE_TAIL;
-    let mut lignes = s.lines();
+    let mut lignes = s.split_inclusive('\n');
     let mut out = String::new();
     for ligne in lignes.by_ref().take(DIFF_ABRIDGE_HEAD) {
         out.push_str(ligne);
-        out.push('\n');
     }
+    // La tête finit par '\n' (total > HEAD : sa dernière ligne n'est
+    // pas la dernière du string) : le marqueur ouvre sa propre ligne.
     let _ = writeln!(out, "… {omises} lignes omises …");
-    // `lines` est double-entrée : la queue se lit à l'envers depuis
-    // la fin de l'itérateur restant, puis se remet à l'endroit.
+    // `split_inclusive` est double-entrée : la queue se lit à
+    // l'envers depuis la fin de l'itérateur restant, puis se remet à
+    // l'endroit.
     let queue: Vec<&str> = lignes.rev().take(DIFF_ABRIDGE_TAIL).collect();
     for ligne in queue.iter().rev() {
         out.push_str(ligne);
-        out.push('\n');
     }
     Cow::Owned(out)
 }
@@ -592,5 +622,65 @@ fn compile_task(
                 Err(format!("compile failed: {}\n{stderr_tail}", task.delivery))
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn abridge_conserve_le_cr_pour_le_marqueur_visible() {
+        // 300 lignes CRLF (> HEAD + TAIL = 250) : le chemin abrégé
+        // doit conserver les '\r' — str::lines() les stripperait, ce
+        // qui rendrait muet un écart CRLF/LF une fois l'entrée
+        // abrégée (le marqueur ␍ d'escape_controls n'apparaîtrait
+        // plus).
+        let s: String = (0..300).map(|i| format!("ligne {i}\r\n")).collect();
+        let abrege = abridge(&s);
+        assert!(
+            abrege.contains("\r\n"),
+            "les CR doivent survivre à l'abridgement : {:?}",
+            &abrege[..abrege.len().min(400)]
+        );
+        assert!(abrege.contains("lignes omises"), "marqueur : {abrege:?}");
+        assert!(abrege.starts_with("ligne 0\r\n"), "tête : {abrege:?}");
+        assert!(abrege.ends_with("ligne 299\r\n"), "queue : {abrege:?}");
+    }
+
+    #[test]
+    fn abridge_courte_passe_telle_quelle_crlf_compris() {
+        let s = "a\r\nb\r\nc"; // 3 lignes, dernière sans terminaison
+        assert_eq!(abridge(s), s, "une entrée courte ne change pas");
+    }
+
+    #[test]
+    fn render_diff_est_cape_en_octets_sur_des_lignes_geantes() {
+        // Deux lignes uniques de 300 Kio chacune : 600 Kio au total,
+        // SOUS le seuil d'abridgement (1 Mio) et très en dessous du
+        // cap de 500 lignes — seul le cap octets du rendu final
+        // protège le rapport.
+        let expected = "a".repeat(300 * 1024);
+        let got = "b".repeat(300 * 1024);
+        let diff = render_diff(&expected, &got);
+        assert!(
+            diff.len() <= DIFF_MAX_BYTES + 128,
+            "le rendu doit être cappé en octets : {} > {} + marge",
+            diff.len(),
+            DIFF_MAX_BYTES
+        );
+        assert!(
+            diff.contains("diff tronqué"),
+            "marqueur de troncature attendu : {:?}",
+            &diff[diff.len().saturating_sub(200)..]
+        );
+    }
+
+    #[test]
+    fn render_diff_petit_rest_intact() {
+        let diff = render_diff("abc\n", "abd\n");
+        assert!(diff.contains("-abc\n"), "{diff:?}");
+        assert!(diff.contains("+abd\n"), "{diff:?}");
+        assert!(!diff.contains("diff tronqué"), "{diff:?}");
     }
 }

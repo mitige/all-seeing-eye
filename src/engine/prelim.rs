@@ -235,7 +235,9 @@ enum RuleProbe {
 /// [`MAKE_TIMEOUT`]. LC_ALL=C est forcé en passant par `/usr/bin/env`
 /// ([`run_capture`] n'a pas de paramètre d'environnement) : le stderr
 /// matché par [`NO_RULE_RE`] ne doit pas dépendre de la locale de la
-/// machine.
+/// machine. `/usr/bin/env` est volontairement en dur (chemin de fait
+/// universel) : env lui-même ne doit pas être résolu via un PATH
+/// tordu — seul `make` l'est.
 fn probe_rule(dir: &Path, rule: &str) -> RuleProbe {
     let args = vec![
         "LC_ALL=C".to_string(),

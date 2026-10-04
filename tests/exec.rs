@@ -336,3 +336,55 @@ fn descendant_setsid_garde_stdin_retour_borne() {
         "le descendant setsid doit survivre au kill de groupe"
     );
 }
+
+/// `setrlimit` au-dessus de la hard limit courante (EPERM pour un
+/// utilisateur non privilégié) ne doit PAS faire échouer le spawn :
+/// la limite est clampée à la hard limit courante (getrlimit + min).
+/// RLIMIT_NPROC est le cas réel : sa hard limit est finie et
+/// non relevable sans privilège, contrairement à RLIMIT_AS souvent
+/// infini.
+#[test]
+fn rlimit_au_dessus_de_la_hard_limit_est_clampee() {
+    let mut courante = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY : `courante` est une rlimit valide et bien alignée,
+    // écrite par l'appel.
+    let rc = unsafe { libc::getrlimit(libc::RLIMIT_NPROC, &mut courante) };
+    assert_eq!(rc, 0, "getrlimit(NPROC) doit réussir");
+    let hard = courante.rlim_max;
+    if hard == libc::RLIM_INFINITY {
+        // Rien à clamper : le scénario est inapplicable sur cette
+        // machine, le test serait vacu.
+        eprintln!("RLIMIT_NPROC infini : test non applicable");
+        return;
+    }
+    let demande = hard.saturating_add(1);
+    let limits = Limits {
+        nproc: demande,
+        ..Limits::default()
+    };
+    // Sans clamp, le setrlimit initial échoue (EPERM) et le spawn
+    // erre — avec clamp, le fils tourne, limité à min(demandé, hard).
+    let args: Vec<String> = ["-c", "ulimit -u"].iter().map(|s| s.to_string()).collect();
+    let out = run_capture(
+        Path::new("sh"),
+        &args,
+        "",
+        &std::env::temp_dir(),
+        Duration::from_secs(5),
+        limits,
+    )
+    .expect("un setrlimit refusé doit être clampé, pas fatal au spawn");
+    assert_eq!(out.status, ExecStatus::Exit(0), "exécution : {out:?}");
+    let soft: u64 = out
+        .stdout
+        .trim()
+        .parse()
+        .unwrap_or_else(|_| panic!("« ulimit -u » doit afficher un entier : {:?}", out.stdout));
+    assert!(
+        soft == hard || soft == demande,
+        "soft attendu {hard} (clampé) ou {demande} (root, sans clamp) — obtenu {soft}"
+    );
+}

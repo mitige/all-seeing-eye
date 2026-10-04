@@ -222,9 +222,31 @@ pub fn run_capture(
                 (libc::RLIMIT_FSIZE, limits.fsize_bytes),
                 (libc::RLIMIT_NPROC, limits.nproc),
             ] {
+                // soft = hard = value : le fils ne peut pas relever
+                // lui-même la limite soft.
                 let rlim = libc::rlimit {
                     rlim_cur: value,
                     rlim_max: value,
+                };
+                if libc::setrlimit(resource, &rlim) == 0 {
+                    continue;
+                }
+                // Refus du noyau — typiquement `value` au-dessus de la
+                // hard limit courante (EPERM, non privilégié) : clamper
+                // à cette hard limit (getrlimit + min) plutôt que
+                // d'échouer le spawn — une limite plus lâche que
+                // demandé n'est pas fatale.
+                let mut courante = libc::rlimit {
+                    rlim_cur: 0,
+                    rlim_max: 0,
+                };
+                if libc::getrlimit(resource, &mut courante) == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                let clamp = value.min(courante.rlim_max);
+                let rlim = libc::rlimit {
+                    rlim_cur: clamp,
+                    rlim_max: clamp,
                 };
                 if libc::setrlimit(resource, &rlim) == -1 {
                     return Err(std::io::Error::last_os_error());

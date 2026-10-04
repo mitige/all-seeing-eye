@@ -5,6 +5,11 @@
 ** my_put_nbr
 */
 
+/* Fixture KO volontaire : le débordement sur INT_MIN repose sur un
+** UB signé assumé (`nb = -nb`) — si -fsanitize=undefined est ajouté
+** un jour à la chaîne, le verdict devient crashed au lieu de failed.
+*/
+
 void my_putchar(char c);
 
 int my_put_nbr(int nb)
