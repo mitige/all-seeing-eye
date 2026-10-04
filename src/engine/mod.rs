@@ -15,7 +15,9 @@ pub mod events;
 /// isolément (PipelineContext construit à la main).
 pub mod build;
 mod functional;
-mod norme;
+/// Publique pour permettre aux tests d'intégration de piloter l'étape
+/// isolément (PipelineContext construit à la main).
+pub mod norme;
 /// Publique pour permettre aux tests d'intégration de piloter l'étape
 /// isolément (PipelineContext construit à la main).
 pub mod prelim;
@@ -152,12 +154,15 @@ pub(crate) fn tail(s: &str, n: usize) -> String {
 
 /// Collecteur de checks d'une étape : émet un [`Event::CheckFinished`]
 /// par vérification, relaie les sorties de sous-processus en
-/// [`Event::LogLine`], et compte pour le résumé d'étape.
+/// [`Event::LogLine`], compte pour le résumé d'étape, et conserve les
+/// checks pour le [`StepReport`] (transmis par [`Collect::finish`] à
+/// [`step_finished`]).
 pub(crate) struct Collect<'a> {
     tx: &'a mpsc::Sender<Event>,
     step: Step,
     total: usize,
     failed: usize,
+    checks: Vec<(String, bool, String)>,
 }
 
 impl Collect<'_> {
@@ -168,15 +173,18 @@ impl Collect<'_> {
             step,
             total: 0,
             failed: 0,
+            checks: Vec::new(),
         }
     }
 
-    /// Émet un check et renvoie son statut (pour l'`&=` de l'étape).
+    /// Émet un check, le conserve pour le [`StepReport`], et renvoie
+    /// son statut (pour l'`&=` de l'étape).
     pub(crate) fn check(&mut self, name: &str, ok: bool, detail: String) -> bool {
         self.total += 1;
         if !ok {
             self.failed += 1;
         }
+        self.checks.push((name.to_string(), ok, detail.clone()));
         send(
             self.tx,
             Event::CheckFinished {
@@ -202,9 +210,11 @@ impl Collect<'_> {
         }
     }
 
-    /// Bilan `(total, en échec)` pour le résumé d'étape.
-    pub(crate) fn finish(&self) -> (usize, usize) {
-        (self.total, self.failed)
+    /// Bilan `(total, en échec, checks émis)` pour le résumé d'étape
+    /// et le [`StepReport`] — consomme le collecteur : les checks sont
+    /// transmis tels quels à [`step_finished`].
+    pub(crate) fn finish(self) -> (usize, usize, Vec<(String, bool, String)>) {
+        (self.total, self.failed, self.checks)
     }
 }
 
@@ -219,22 +229,25 @@ fn step_started(tx: &mpsc::Sender<Event>, step: Step) {
     );
 }
 
-/// Fin d'étape normale : émet `StepFinished` et enregistre le `StepReport`.
+/// Fin d'étape normale : émet `StepFinished` et enregistre le
+/// `StepReport`, checks inclus (`Collect::finish` les transmet ; une
+/// étape sans collecteur passe `Vec::new()`).
 fn step_finished(
     ctx: &mut PipelineContext,
     tx: &mpsc::Sender<Event>,
     step: Step,
     ok: bool,
     summary: String,
+    checks: Vec<(String, bool, String)>,
 ) {
-    step_finished_impl(ctx, tx, step, ok, false, summary);
+    step_finished_impl(ctx, tx, step, ok, false, summary, checks);
 }
 
 /// Étape sautée (dépendance échouée) : `StepFinished` avec `skipped: true`
 /// et `ok: false` — un skip n'est jamais un succès. `summary` porte la
 /// raison humaine ("skipped: …").
 fn step_skipped(ctx: &mut PipelineContext, tx: &mpsc::Sender<Event>, step: Step, summary: String) {
-    step_finished_impl(ctx, tx, step, false, true, summary);
+    step_finished_impl(ctx, tx, step, false, true, summary, Vec::new());
 }
 
 /// Implémentation commune : émet `StepFinished` et enregistre le `StepReport`.
@@ -245,6 +258,7 @@ fn step_finished_impl(
     ok: bool,
     skipped: bool,
     summary: String,
+    checks: Vec<(String, bool, String)>,
 ) {
     send(
         tx,
@@ -260,7 +274,7 @@ fn step_finished_impl(
         ok,
         skipped,
         summary,
-        checks: Vec::new(), // les checks détaillés arrivent avec les vraies étapes
+        checks,
     });
 }
 

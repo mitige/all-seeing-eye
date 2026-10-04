@@ -19,7 +19,7 @@ pub fn run(ctx: &mut PipelineContext, tx: &mpsc::Sender<Event>) {
     super::step_started(tx, Step::Verdict);
     // step_finished AVANT la construction du rapport : le Verdict
     // lui-même est la 7e entrée de `report.steps`.
-    super::step_finished(ctx, tx, Step::Verdict, true, "stub".to_string());
+    super::step_finished(ctx, tx, Step::Verdict, true, "stub".to_string(), Vec::new());
     let report = Report {
         project: ctx.battery.project.name.clone(),
         steps: ctx.steps.clone(),

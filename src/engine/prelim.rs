@@ -52,9 +52,9 @@ pub fn run(ctx: &mut PipelineContext, tx: &mpsc::Sender<Event>) -> bool {
         ProjectType::Binary => check_makefile(ctx, &mut c),
         ProjectType::Functions => check_functions(ctx, &mut c),
     };
-    let (total, failed) = c.finish();
+    let (total, failed, checks) = c.finish();
     let summary = format!("{total} vérifications, {failed} en échec");
-    super::step_finished(ctx, tx, Step::Prelim, ok, summary);
+    super::step_finished(ctx, tx, Step::Prelim, ok, summary, checks);
     ok
 }
 

@@ -77,6 +77,7 @@ pub fn run(ctx: &mut PipelineContext, tx: &mpsc::Sender<Event>) -> bool {
                 Step::Build,
                 false,
                 format!("salle blanche : {e:#}"),
+                Vec::new(),
             );
             return false;
         }
@@ -98,12 +99,12 @@ pub fn run(ctx: &mut PipelineContext, tx: &mpsc::Sender<Event>) -> bool {
     };
     // Les KO non bloquants (ex. cflag manquant) restent visibles dans
     // le résumé — jamais masqués par un verdict global OK.
-    let (total, failed) = c.finish();
+    let (total, failed, checks) = c.finish();
     let summary = format!(
         "build {} ({total} vérifications, {failed} en échec)",
         if ok { "ok" } else { "failed" },
     );
-    super::step_finished(ctx, tx, Step::Build, ok, summary);
+    super::step_finished(ctx, tx, Step::Build, ok, summary, checks);
     ok
 }
 

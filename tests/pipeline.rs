@@ -123,14 +123,37 @@ fn pipeline_emet_7_step_started_dans_l_ordre_puis_run_finished() {
             }
             Event::CheckFinished { step, ok, .. } => {
                 assert!(
-                    matches!(step, Step::Prelim | Step::Build),
-                    "check hors Prelim/Build : {e:?}"
+                    matches!(step, Step::Prelim | Step::Build | Step::Norme),
+                    "check hors Prelim/Build/Norme : {e:?}"
                 );
-                assert!(*ok, "check en échec : {e:?}");
+                // Prelim/Build passent sur ce rendu minimal. Norme :
+                // la delivery n'a pas d'en-tête Epitech → la faute
+                // C-G1 est légitime, le check par fichier est KO.
+                if *step != Step::Norme {
+                    assert!(*ok, "check en échec : {e:?}");
+                }
+            }
+            // Task 6 : la norme émet ses fautes en events. Leur liste
+            // dépend du moteur (banana voit aussi la C-H1 du prototype
+            // dans le .c ; l'interne non), mais toutes visent la
+            // delivery.
+            Event::NormeFault(f) => {
+                assert_eq!(f.file, PathBuf::from("my_putchar.c"));
             }
             other => panic!("événement inattendu : {other:?}"),
         }
     }
+    // La faute C-G1 (pas d'en-tête Epitech — produite par les DEUX
+    // moteurs) est remontée jusqu'au rapport : ctx.norme_faults →
+    // Report.norme via le verdict.
+    assert!(
+        report
+            .norme
+            .iter()
+            .any(|f| f.rule == "C-G1" && f.file == PathBuf::from("my_putchar.c")),
+        "C-G1 absente du rapport : {:?}",
+        report.norme
+    );
 
     // Dernier événement : RunFinished, avec un rapport complet.
     match events.last() {
