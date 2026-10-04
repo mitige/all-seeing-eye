@@ -233,8 +233,9 @@ fn expected_stdout(
 ///
 /// Task 13 ajoutera cpool_day03 (via `include_str!` des fichiers de
 /// `batteries/`). Vide pour l'instant — aucun `include_str!` ne doit
-/// pointer vers un fichier inexistant.
-fn embedded_batteries() -> Vec<(&'static str, &'static str)> {
+/// pointer vers un fichier inexistant. Publique pour le CLI
+/// (Task 12 : `list` et `--battery <nom>`).
+pub fn embedded_batteries() -> Vec<(&'static str, &'static str)> {
     // Task 13 ajoutera cpool_day03
     Vec::new()
 }
