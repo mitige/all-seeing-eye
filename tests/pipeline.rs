@@ -79,9 +79,9 @@ fn pipeline_emet_7_step_started_dans_l_ordre_puis_run_finished() {
     );
 
     // Les 7 étapes se terminent ok, non skipped : 7 StepStarted
-    // + 7 StepFinished + 1 RunFinished, plus les CheckFinished de
-    // l'étape Prelim (Task 4) — leur nombre exact dépend de la
-    // présence de banana-check-repo sur la machine.
+    // + 7 StepFinished + 1 RunFinished, plus les CheckFinished des
+    // étapes Prelim (Task 4) et Build (Task 5) — leur nombre exact
+    // dépend de la présence de banana-check-repo sur la machine.
     let finished_ok = events
         .iter()
         .filter(|e| {
@@ -116,9 +116,17 @@ fn pipeline_emet_7_step_started_dans_l_ordre_puis_run_finished() {
     for e in &events {
         match e {
             Event::StepStarted { .. } | Event::StepFinished { .. } | Event::RunFinished { .. } => {}
+            // Task 5 : l'étape Build émet ses propres checks (compile
+            // OK ici) et peut relayer des LogLine de sous-processus.
+            Event::LogLine { step, .. } => {
+                assert_eq!(*step, Step::Build, "LogLine hors Build : {e:?}");
+            }
             Event::CheckFinished { step, ok, .. } => {
-                assert_eq!(*step, Step::Prelim, "check hors Prelim : {e:?}");
-                assert!(*ok, "check Prelim en échec : {e:?}");
+                assert!(
+                    matches!(step, Step::Prelim | Step::Build),
+                    "check hors Prelim/Build : {e:?}"
+                );
+                assert!(*ok, "check en échec : {e:?}");
             }
             other => panic!("événement inattendu : {other:?}"),
         }
