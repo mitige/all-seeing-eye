@@ -37,6 +37,9 @@ fn lire_last_json(data: &TempDir) -> serde_json::Value {
     let path = data.path().join("all-seeing-eye").join("last.json");
     let contenu = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("last.json illisible ({}) : {e}", path.display()));
+    // Le second livrable doit exister à côté.
+    let txt = data.path().join("all-seeing-eye").join("last.txt");
+    assert!(txt.exists(), "last.txt manquant ({})", txt.display());
     serde_json::from_str(&contenu).expect("last.json doit être du JSON valide")
 }
 

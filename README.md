@@ -14,7 +14,7 @@ Pipeline, dans l'ordre :
    delivery pour un functions ;
 3. **Norme** — epiclang + banana si détecté, moteur interne de repli
    sinon ;
-4. **Symboles** — fonctions interdites dans les `.o` produits
+4. **Symboles** — fonctions interdites (binaire linké en projet `binary`, `.o` produits en `functions`)
    (whitelist `allowed_functions`) ;
 5. **Tests unitaires** — `make tests_run`, sortie criterion parsée,
    si `tests_run_rule` ;
@@ -46,7 +46,7 @@ Le binaire `all-seeing-eye` est installé dans `~/.cargo/bin`.
 ```sh
 cd mon_rendu
 all-seeing-eye                        # TUI live, rapport texte au « q »
-all-seeing-eye --no-tui               # flux texte (CI) — exit 0 si 100 %, 1 sinon
+all-seeing-eye --no-tui               # flux texte (CI) — exit 0 si score 100 % ET toutes étapes OK, 1 sinon
 all-seeing-eye --battery cpool_day03  # batterie nommée au lieu de la découverte
 all-seeing-eye --strict-norme         # epiclang requis : norme KO s'il est absent
 all-seeing-eye list                   # batteries connues (config + embarquées)
