@@ -13,46 +13,17 @@
 //! fichier sans jamais le rendre) pour que seul le comportement
 //! fonctionnel diffère.
 
-use all_seeing_eye::battery::{self, Battery};
-use all_seeing_eye::engine::{run_pipeline, RunOpts};
 use all_seeing_eye::norme::official;
 use all_seeing_eye::report::Report;
-use std::path::PathBuf;
-use std::sync::mpsc;
-use tempfile::TempDir;
 
 mod common;
 
-use common::{XdgGuard, XDG_MUTEX};
+use common::{batterie_day03, fixture, run_pipeline_isole};
 
-/// La batterie embarquée, extraite et chargée.
-fn batterie_day03() -> Battery {
-    battery::load_embedded("cpool_day03")
-        .unwrap()
-        .expect("cpool_day03 embarquée")
-}
-
-/// Options de test : cc partout (portable, avec ou sans epiclang).
-fn test_opts() -> RunOpts {
-    RunOpts {
-        strict_norme: false,
-        use_epiclang: false,
-        compiler: PathBuf::from("cc"),
-    }
-}
-
-/// Pipeline complet sur `tests/fixtures/<fixture>`, rapport retourné.
-/// Le verdict sauvegarde le rapport : data dir isolé, jamais celui de
-/// l'utilisateur (XDG_MUTEX, comme pipeline.rs).
-fn run_sur_fixture(fixture: &str) -> Report {
-    let _lock = XDG_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
-    let data = TempDir::new().unwrap();
-    let _xdg = XdgGuard::set("XDG_DATA_HOME", data.path());
-    let target = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures")
-        .join(fixture);
-    let (tx, _rx) = mpsc::channel();
-    run_pipeline(&batterie_day03(), &target, tx, &test_opts())
+/// Pipeline complet sur `tests/fixtures/<fixture>`, rapport retourné
+/// (data dir du rapport isolé par [`run_pipeline_isole`]).
+fn run_sur_fixture(fixture_name: &str) -> Report {
+    run_pipeline_isole(&batterie_day03(), &fixture(fixture_name)).1
 }
 
 #[test]
