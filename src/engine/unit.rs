@@ -2,26 +2,41 @@
 //!
 //! Lance `make tests_run` dans la salle blanche (LC_ALL=C, timeout
 //! 120 s), relaie stdout/stderr en [`Event::LogLine`] et parse la
-//! sortie criterion (2.x) :
+//! sortie criterion (2.x) — le vrai criterion écrit TOUT sur stderr ;
+//! les deux flux sont parsés (une règle exotique peut rediriger) :
 //! - lignes de succès : contiennent `[OK]` (fixture scriptée) ou
 //!   `[PASS]` (vrai criterion `--verbose`) — les codes ANSI
 //!   (`\x1b[...m`) sont strippés avant parsing ;
 //! - lignes d'échec : contiennent `[KO]` ou `[FAIL]` ;
+//! - crash : « [FAIL] name: CRASH! » — le suffixe « CRASH! » est
+//!   strippé du nom et le verdict est `TestVerdict::Crashed(-1)`
+//!   (criterion ne donne pas le signal sur cette ligne : -1 =
+//!   signal inconnu à ce niveau de parsing) ;
 //! - résumé final : « Tests: X | Passing: Y | Failing: Z » (tolérant
 //!   aux variations d'espaces/casse minimales — le « Synthesis:
 //!   Tested: … » du vrai criterion est reconnu aussi).
 //!
-//! Chaque test parsé émet `TestStarted`/`TestFinished` (groupe « unit »)
-//! et alimente `ctx.tests` pour le rapport. Criterion ne fournit pas
-//! de diff sur stdout : un `Failed` porte des champs vides — le détail
-//! vit dans les LogLine relayées.
+//! Chaque test parsé émet `TestStarted`/`TestFinished` (groupe
+//! [`Step::Unit`]) et alimente `ctx.tests` pour le rapport. Criterion
+//! ne fournit pas de diff exploitable : un `Failed` porte des champs
+//! vides — le détail vit dans les LogLine relayées.
 //!
-//! Verdict : l'étape réussit ssi exit==0 ET tous les tests parsés
-//! passent ET au moins un test est parsé. Un `make tests_run` en
-//! échec ne masque PAS les tests déjà parsés (la vraie moulinette
-//! montre les tests passés même si la suite échoue) ; un tests_run
-//! sans test détecté est un KO explicite (un tests_run vide est un
-//! zero déguisé).
+//! Verdict : l'étape réussit ssi exit==0 ET aucun test en échec ET au
+//! moins un test attesté (parsé, ou résumé `Tested > 0`). Le vrai
+//! criterion SANS `--verbose` n'émet QUE la Synthesis pour une suite
+//! 100 % verte (aucun `[PASS]`) : le résumé conduit alors le verdict
+//! (check récapitulatif « N tests, M en échec (résumé) ») au lieu
+//! d'un faux KO « sans test détecté ». Et comme il n'émet que les
+//! `[FAIL]` dès qu'un test échoue, un enregistrement de vérité du
+//! résumé (« résumé criterion : P pass / F fail ») est émis EN PLUS
+//! des tests parsés — sinon le décompte global mentirait (« 0/1 »
+//! pour une suite 3 pass / 1 fail). Un `make tests_run` en échec ne
+//! masque PAS les tests déjà parsés (la vraie moulinette montre les
+//! tests passés même si la suite échoue) ; un tests_run sans test
+//! attesté est un KO explicite (un tests_run vide est un zero
+//! déguisé) ; une sortie tronquée (stdout ou stderr) est un KO
+//! explicite : le parsing EST le verdict quand la règle sort 0, et
+//! des lignes perdues peuvent cacher des échecs.
 //!
 //! Couverture : si `gcovr` est présent (sonde `--version` bornée à
 //! 5 s) ET des `.gcda` existent dans la salle blanche,
@@ -43,6 +58,7 @@ use regex::Regex;
 use std::fs;
 use std::path::Path;
 use std::sync::mpsc;
+use std::sync::LazyLock;
 use std::time::Duration;
 
 /// Timeout du `make tests_run` (spec : 120 s, comme le build).
@@ -59,8 +75,9 @@ const GCOVR_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_GCDA_DEPTH: usize = 64;
 
 /// Étape 5 du pipeline : tests unitaires. Renvoie `true` ssi exit==0,
-/// tous les tests parsés passent et au moins un test est parsé
-/// (désactivation et skip de dépendance exceptés).
+/// aucun test en échec, au moins un test attesté (parsé, ou résumé
+/// `Tested > 0`) et sortie non tronquée (désactivation et skip de
+/// dépendance exceptés).
 pub fn run(ctx: &mut PipelineContext, tx: &mpsc::Sender<Event>) -> bool {
     super::step_started(tx, Step::Unit);
 
@@ -117,8 +134,9 @@ pub fn run(ctx: &mut PipelineContext, tx: &mpsc::Sender<Event>) -> bool {
     c.log(&outcome.stdout);
     c.log(&outcome.stderr);
 
-    // Parse stdout puis stderr (criterion écrit sur stdout, mais une
-    // règle exotique peut rediriger — on ne perd jamais un test).
+    // Parse stdout puis stderr (le vrai criterion écrit TOUT sur
+    // stderr ; une règle exotique peut rediriger — on ne perd jamais
+    // un test).
     let mut parsed = parse_output(&outcome.stdout);
     let err_parsed = parse_output(&outcome.stderr);
     parsed.tests.extend(err_parsed.tests);
@@ -126,36 +144,46 @@ pub fn run(ctx: &mut PipelineContext, tx: &mpsc::Sender<Event>) -> bool {
 
     // Chaque test parsé : Started/Finished + record pour le rapport.
     let mut failed = 0usize;
-    for (name, passed) in &parsed.tests {
-        let verdict = if *passed {
-            TestVerdict::Passed
-        } else {
-            failed += 1;
-            // Criterion ne donne pas de diff stdout : le détail vit
-            // dans les LogLine relayées.
-            TestVerdict::Failed {
-                diff: String::new(),
-                expected: String::new(),
-                got: String::new(),
+    for (name, parsed_verdict) in &parsed.tests {
+        let verdict = match parsed_verdict {
+            ParsedVerdict::Passed => TestVerdict::Passed,
+            ParsedVerdict::Failed => {
+                failed += 1;
+                // Criterion ne donne pas de diff exploitable : le
+                // détail vit dans les LogLine relayées.
+                TestVerdict::Failed {
+                    diff: String::new(),
+                    expected: String::new(),
+                    got: String::new(),
+                }
+            }
+            // « CRASH! » ne précise pas le signal : -1 = signal
+            // inconnu à ce niveau de parsing.
+            ParsedVerdict::Crashed => {
+                failed += 1;
+                TestVerdict::Crashed(-1)
             }
         };
         super::send(
             tx,
             Event::TestStarted {
-                group: "unit".to_string(),
+                group: Step::Unit.name().to_string(),
                 name: name.clone(),
             },
         );
         super::send(
             tx,
             Event::TestFinished {
-                group: "unit".to_string(),
+                group: Step::Unit.name().to_string(),
                 name: name.clone(),
                 result: verdict.clone(),
             },
         );
-        ctx.tests
-            .push(super::verdict::test_record("unit", name, &verdict));
+        ctx.tests.push(super::verdict::test_record(
+            Step::Unit.name(),
+            name,
+            &verdict,
+        ));
     }
 
     // Verdict : exit de la règle, puis parsing.
@@ -174,27 +202,60 @@ pub fn run(ctx: &mut PipelineContext, tx: &mpsc::Sender<Event>) -> bool {
             c.check("tests_run", false, detail)
         }
     };
-    if parsed.tests.is_empty() {
-        // Un tests_run vide est un zero déguisé.
-        ok &= c.check("tests", false, "tests_run sans test détecté".to_string());
-    } else {
-        let passed = parsed.tests.len() - failed;
-        let detail = match parsed.summary {
-            Some((t, p, f)) => format!(
-                "{passed} passed, {failed} failed (résumé : {t} tests, {p} passing, {f} failing)"
-            ),
-            None => format!("{passed} passed, {failed} failed"),
-        };
-        ok &= c.check("tests", failed == 0, detail);
+    // Sortie tronquée : le parsing EST le verdict quand la règle sort
+    // 0 — des lignes perdues peuvent cacher des échecs. KO explicite.
+    if outcome.stdout_truncated || outcome.stderr_truncated {
+        ok &= c.check(
+            "sortie",
+            false,
+            "sortie tronquée : parsing potentiellement incomplet".to_string(),
+        );
     }
+    ok &= match (parsed.tests.is_empty(), parsed.summary) {
+        // Non-verbose : le vrai criterion n'émet QUE la Synthesis pour
+        // une suite 100 % verte (aucun [PASS]). Le résumé atteste
+        // Tested > 0 : il conduit le verdict.
+        (true, Some((tested, _, failing))) if tested > 0 => c.check(
+            "tests",
+            failing == 0,
+            format!("{tested} tests, {failing} en échec (résumé)"),
+        ),
+        // Ni test parsé ni résumé attestant des tests : un tests_run
+        // vide est un zero déguisé.
+        (true, _) => c.check("tests", false, "tests_run sans test détecté".to_string()),
+        (false, summary) => {
+            let passed = parsed.tests.len() - failed;
+            let mut all = c.check(
+                "tests",
+                failed == 0,
+                format!("{passed} passed, {failed} failed"),
+            );
+            if let Some((tested, passing, failing)) = summary {
+                // Vérité du résumé, EN PLUS des tests parsés : en
+                // non-verbose criterion n'émet que les [FAIL] — sans
+                // ce check, le décompte global mentirait (« 0/1 »
+                // pour une suite 3 pass / 1 fail).
+                all &= c.check(
+                    "résumé",
+                    failing == 0,
+                    format!(
+                        "résumé criterion : {passing} pass / {failing} fail (tested: {tested})"
+                    ),
+                );
+            }
+            all
+        }
+    };
 
     // Couverture gcovr : jamais bloquante, n'influe pas le verdict.
     coverage(&white, &c);
 
-    let summary = if parsed.tests.is_empty() {
-        "tests_run sans test détecté".to_string()
-    } else {
-        format!("{} tests, {failed} en échec", parsed.tests.len())
+    let summary = match (parsed.tests.is_empty(), parsed.summary) {
+        (true, Some((tested, _, failing))) if tested > 0 => {
+            format!("{tested} tests, {failing} en échec (résumé)")
+        }
+        (true, _) => "tests_run sans test détecté".to_string(),
+        (false, _) => format!("{} tests, {failed} en échec", parsed.tests.len()),
     };
     let (_, _, checks) = c.finish();
     super::step_finished(ctx, tx, Step::Unit, ok, summary, checks);
@@ -291,33 +352,52 @@ fn has_gcda(dir: &Path) -> bool {
     false
 }
 
-/// Sortie criterion parsée : les tests `(nom, passed)` dans l'ordre et
-/// le résumé final éventuel `(tests, passing, failing)`.
+/// Sortie criterion parsée : les tests `(nom, verdict)` dans l'ordre
+/// et le résumé final éventuel `(tests, passing, failing)`.
 struct ParsedOutput {
-    tests: Vec<(String, bool)>,
+    tests: Vec<(String, ParsedVerdict)>,
     summary: Option<(u64, u64, u64)>,
 }
 
-/// Parse une sortie criterion : codes ANSI strippés, marqueurs
-/// `[OK]`/`[PASS]` (succès) et `[KO]`/`[FAIL]` (échec), résumé
-/// « Tests: X | Passing: Y | Failing: Z » (tolérant aux variations
-/// d'espaces/casse — le « Tested: … » du vrai criterion est reconnu).
-fn parse_output(output: &str) -> ParsedOutput {
-    // Regex littérales, toujours valides — d'où les expect.
-    let ansi = Regex::new(r"\x1b\[[0-9;]*m").expect("regex ANSI littérale valide");
-    let summary_re = Regex::new(
+/// Verdict parsé d'une ligne de test criterion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ParsedVerdict {
+    Passed,
+    Failed,
+    /// « CRASH! » : criterion ne donne pas le signal sur la ligne.
+    Crashed,
+}
+
+/// Codes ANSI (`\x1b[...m`) strippés avant parsing. Compilée une fois
+/// pour toutes (LazyLock) — regex littérale, toujours valide.
+static ANSI_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\x1b\[[0-9;]*m").expect("regex ANSI littérale valide"));
+
+/// Résumé criterion « Test(s|ed): X | Passing: Y | Failing: Z »
+/// (tolérant espaces/casse ; la forme « Synthesis: Tested: … » du
+/// vrai criterion est reconnue). Compilée une fois (LazyLock).
+static SUMMARY_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
         r"(?i)test(?:s|ed)?\s*:\s*(\d+)\s*\|\s*passing\s*:\s*(\d+)\s*\|\s*failing\s*:\s*(\d+)",
     )
-    .expect("regex résumé littérale valide");
+    .expect("regex résumé littérale valide")
+});
+
+/// Parse une sortie criterion : codes ANSI strippés, marqueurs
+/// `[OK]`/`[PASS]` (succès) et `[KO]`/`[FAIL]` (échec — ou crash si
+/// le nom se termine par « CRASH! »), résumé « Tests: X | Passing: Y
+/// | Failing: Z » (tolérant aux variations d'espaces/casse — le
+/// « Tested: … » du vrai criterion est reconnu).
+fn parse_output(output: &str) -> ParsedOutput {
     let mut parsed = ParsedOutput {
         tests: Vec::new(),
         summary: None,
     };
     for line in output.lines() {
-        let line = ansi.replace_all(line, "");
-        if let Some((name, passed)) = parse_test_line(&line) {
-            parsed.tests.push((name, passed));
-        } else if let Some(cap) = summary_re.captures(&line) {
+        let line = ANSI_RE.replace_all(line, "");
+        if let Some((name, verdict)) = parse_test_line(&line) {
+            parsed.tests.push((name, verdict));
+        } else if let Some(cap) = SUMMARY_RE.captures(&line) {
             // Chiffres capturés par \d+ : le parse ne peut échouer que
             // sur un entier absurde (> u64) — repli défensif à 0.
             parsed.summary = Some((
@@ -339,17 +419,23 @@ const MARKERS: &[(&str, bool)] = &[
     ("[FAIL]", false),
 ];
 
-/// Si `line` rapporte un test, renvoie `(nom, passed)`.
-fn parse_test_line(line: &str) -> Option<(String, bool)> {
+/// Si `line` rapporte un test, renvoie `(nom, verdict)`.
+fn parse_test_line(line: &str) -> Option<(String, ParsedVerdict)> {
     let &(marker, passed) = MARKERS.iter().find(|(m, _)| line.contains(m))?;
-    let name = extract_name(line, marker)?;
-    Some((name, passed))
+    let (name, crashed) = extract_name(line, marker)?;
+    let verdict = match (passed, crashed) {
+        (true, _) => ParsedVerdict::Passed,
+        (false, true) => ParsedVerdict::Crashed,
+        (false, false) => ParsedVerdict::Failed,
+    };
+    Some((name, verdict))
 }
 
-/// Nom du test autour du marqueur : « tests::strlen: [OK] » ou
-/// « [PASS] sample::passing: (0.00s) » → « tests::strlen » /
-/// « sample::passing ».
-fn extract_name(line: &str, marker: &str) -> Option<String> {
+/// Nom du test autour du marqueur, et `true` si criterion rapporte un
+/// crash : « tests::strlen: [OK] » → (« tests::strlen », false) ;
+/// « [PASS] sample::passing: (0.00s) » → (« sample::passing », false) ;
+/// « [FAIL] sample::segv: CRASH! » → (« sample::segv », true).
+fn extract_name(line: &str, marker: &str) -> Option<(String, bool)> {
     let without = line.replacen(marker, " ", 1);
     let mut name = without.trim();
     // Timing final du vrai criterion : « name: (0.00s) ».
@@ -358,11 +444,17 @@ fn extract_name(line: &str, marker: &str) -> Option<String> {
             name = name[..pos].trim_end();
         }
     }
+    // Crash du vrai criterion : « name: CRASH! » (strippé après le
+    // timing — une ligne de crash n'en porte pas).
+    let crashed = name.ends_with("CRASH!");
+    if crashed {
+        name = name[..name.len() - "CRASH!".len()].trim_end();
+    }
     let name = name.trim_end_matches(':').trim();
     if name.is_empty() {
         None
     } else {
-        Some(name.to_string())
+        Some((name.to_string(), crashed))
     }
 }
 
@@ -376,9 +468,9 @@ mod tests {
         assert_eq!(
             p.tests,
             vec![
-                ("tests::a".to_string(), true),
-                ("tests::b".to_string(), false),
-                ("tests::c".to_string(), false),
+                ("tests::a".to_string(), ParsedVerdict::Passed),
+                ("tests::b".to_string(), ParsedVerdict::Failed),
+                ("tests::c".to_string(), ParsedVerdict::Failed),
             ]
         );
     }
@@ -389,9 +481,21 @@ mod tests {
         assert_eq!(
             p.tests,
             vec![
-                ("sample::ok".to_string(), true),
-                ("sample::ko".to_string(), false),
+                ("sample::ok".to_string(), ParsedVerdict::Passed),
+                ("sample::ko".to_string(), ParsedVerdict::Failed),
             ]
+        );
+    }
+
+    #[test]
+    fn parse_crash_suffixe_strippe_et_verdict_crashed() {
+        // Format réel vérifié (criterion 2.4.3) : « [FAIL]
+        // sample::segv: CRASH! » — le suffixe « CRASH! » est strippé
+        // du nom, le verdict est Crashed.
+        let p = parse_output("[FAIL] sample::segv: CRASH!\n");
+        assert_eq!(
+            p.tests,
+            vec![("sample::segv".to_string(), ParsedVerdict::Crashed)]
         );
     }
 
@@ -403,9 +507,9 @@ mod tests {
         assert_eq!(
             p.tests,
             vec![
-                ("tests::green".to_string(), true),
-                ("tests::marker".to_string(), true),
-                ("tests::red".to_string(), false),
+                ("tests::green".to_string(), ParsedVerdict::Passed),
+                ("tests::marker".to_string(), ParsedVerdict::Passed),
+                ("tests::red".to_string(), ParsedVerdict::Failed),
             ]
         );
     }

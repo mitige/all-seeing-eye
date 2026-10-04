@@ -447,6 +447,169 @@ fn tests_run_vide_ko_sans_test_detecte() {
 }
 
 #[test]
+fn synthese_seule_non_verbose_etape_ok() {
+    // Reproduction live : le vrai criterion SANS --verbose n'émet QUE
+    // la ligne Synthesis pour une suite 100 % verte (aucun [PASS]) —
+    // et tout sur stderr. Le résumé atteste 3 tests : pas un KO
+    // « sans test détecté ».
+    let (_bat_dir, battery) = load_battery(&battery_toml(true));
+    let white = stage_fixture();
+    write_script(
+        white.path(),
+        "#!/bin/sh
+echo '[====] Synthesis: Tested: 3 | Passing: 3 | Failing: 0 | Crashing: 0 ' >&2
+exit 0
+",
+    );
+
+    let (ok, events, _ctx) = run_unit(&battery, white);
+    assert!(
+        ok,
+        "suite 100 % verte non-verbose : l'étape passe : {events:?}"
+    );
+    assert!(
+        finished_tests(&events).is_empty(),
+        "aucun test individuel en non-verbose : {events:?}"
+    );
+    // Le verdict est conduit par le résumé : check récapitulatif OK.
+    let checks = extract_checks(&events);
+    assert!(
+        checks
+            .iter()
+            .any(|(n, ok, d)| n == "tests" && *ok && d.contains("résumé")),
+        "check récapitulatif conduit par le résumé absent : {checks:?}"
+    );
+    let (ok_ev, skipped, _) = step_finished(&events);
+    assert!(ok_ev && !skipped, "étape OK, non skipped");
+}
+
+#[test]
+fn synthese_seule_avec_echec_etape_ko() {
+    // Contrepartie : Synthesis Failing: 1 + exit 1, toujours sans
+    // tests individuels → KO conduit par le résumé (et par l'exit).
+    let (_bat_dir, battery) = load_battery(&battery_toml(true));
+    let white = stage_fixture();
+    write_script(
+        white.path(),
+        "#!/bin/sh
+echo '[====] Synthesis: Tested: 3 | Passing: 2 | Failing: 1 | Crashing: 0 ' >&2
+exit 1
+",
+    );
+
+    let (ok, events, _ctx) = run_unit(&battery, white);
+    assert!(!ok, "résumé attestant un échec : étape KO");
+    assert!(
+        finished_tests(&events).is_empty(),
+        "aucun test individuel en non-verbose : {events:?}"
+    );
+    let checks = extract_checks(&events);
+    assert!(
+        checks
+            .iter()
+            .any(|(n, ok, d)| n == "tests" && !*ok && d.contains("résumé")),
+        "check KO conduit par le résumé absent : {checks:?}"
+    );
+    let (ok_ev, skipped, _) = step_finished(&events);
+    assert!(!ok_ev && !skipped);
+}
+
+#[test]
+fn crash_criterion_rapporte_crashed() {
+    // Format réel vérifié (criterion 2.4.3) : « [FAIL] sample::segv:
+    // CRASH! ». Le suffixe « CRASH! » est strippé du nom et le verdict
+    // est Crashed(-1) — criterion ne donne pas le signal sur cette
+    // ligne.
+    let (_bat_dir, battery) = load_battery(&battery_toml(true));
+    let white = stage_fixture();
+    write_script(
+        white.path(),
+        "#!/bin/sh
+echo '[----] crash.c:4: Unexpected signal caught below this line!' >&2
+echo '[FAIL] sample::segv: CRASH!' >&2
+echo '[====] Synthesis: Tested: 2 | Passing: 1 | Failing: 1 | Crashing: 1 ' >&2
+exit 1
+",
+    );
+
+    let (ok, events, ctx) = run_unit(&battery, white);
+    assert!(!ok, "un crash : étape KO");
+    let tests = finished_tests(&events);
+    assert_eq!(tests.len(), 1, "un seul test parsé : {tests:?}");
+    assert_eq!(
+        tests[0].0, "sample::segv",
+        "suffixe CRASH! strippé : {tests:?}"
+    );
+    assert!(
+        matches!(tests[0].1, TestVerdict::Crashed(-1)),
+        "verdict Crashed(-1) attendu : {tests:?}"
+    );
+    let record = ctx
+        .tests
+        .iter()
+        .find(|t| t.name == "sample::segv")
+        .expect("record sample::segv");
+    assert_eq!(record.verdict, "crashed", "{record:?}");
+}
+
+#[test]
+fn sortie_tronquee_ko() {
+    // Plus de MAX_CAPTURE_BYTES (4 Mio) sur stdout : le parsing — seul
+    // verdict quand la règle sort 0 — a pu perdre des lignes. KO
+    // explicite, jamais un vert sur du partiel.
+    let (_bat_dir, battery) = load_battery(&battery_toml(true));
+    let white = stage_fixture();
+    write_script(
+        white.path(),
+        "#!/bin/sh
+echo 'tests::my_strlen: [OK]'
+echo 'Tests: 1 | Passing: 1 | Failing: 0'
+head -c 5000000 /dev/zero | tr '\\0' 'x'
+exit 0
+",
+    );
+
+    let (ok, events, _ctx) = run_unit(&battery, white);
+    assert!(!ok, "sortie tronquée : KO malgré les tests verts");
+    let checks = extract_checks(&events);
+    assert!(
+        checks
+            .iter()
+            .any(|(_, ok, d)| !*ok && d.contains("tronquée")),
+        "check KO « sortie tronquée » absent : {checks:?}"
+    );
+}
+
+#[test]
+fn resume_critere_en_plus_des_tests_parses() {
+    // Non-verbose avec échec : criterion n'émet que les [FAIL] — sans
+    // enregistrement de vérité du résumé, le décompte global
+    // rapporterait « 0/1 » alors que la suite est « 3 pass / 1 fail ».
+    let (_bat_dir, battery) = load_battery(&battery_toml(true));
+    let white = stage_fixture();
+    write_script(
+        white.path(),
+        "#!/bin/sh
+echo '[FAIL] sample::failing: (0.01s)' >&2
+echo '[====] Synthesis: Tested: 4 | Passing: 3 | Failing: 1 | Crashing: 0 ' >&2
+exit 1
+",
+    );
+
+    let (ok, events, _ctx) = run_unit(&battery, white);
+    assert!(!ok, "un échec : étape KO");
+    let tests = finished_tests(&events);
+    assert_eq!(tests.len(), 1, "seul le FAIL est parsé : {tests:?}");
+    let checks = extract_checks(&events);
+    assert!(
+        checks
+            .iter()
+            .any(|(_, _, d)| d.contains("résumé criterion : 3 pass / 1 fail")),
+        "enregistrement de vérité du résumé absent : {checks:?}"
+    );
+}
+
+#[test]
 fn couverture_jamais_bloquante() {
     let (_bat_dir, battery) = load_battery(&battery_toml(true));
     let white = stage_fixture();
