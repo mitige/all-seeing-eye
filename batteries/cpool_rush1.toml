@@ -1,0 +1,112 @@
+# Batterie cpool_rush1 — C Pool Rush1 « The Squares ».
+#
+# 5 assignments, chacun une variante de `void rush(int x, int y)`
+# livrée dans un DOSSIER `rush-1-N/` : le champ `delivery` accepte un
+# dossier (tous ses *.c directs sont compilés, comme la vraie
+# moulinette qui fait `clang *.c`). L'étudiant ne rend NI son main NI
+# son my_putchar.c : chaque task est compilée avec le harness de la
+# batterie (harness/main_rush_1_N.c + harness/my_putchar.c officiel),
+# comme la vraie moulinette qui ajoute SES main.c et my_putchar.c.
+#
+# Seuls appels système autorisés côté étudiant : write (le sujet) et
+# my_putchar (qui wrappe write) — d'où allowed_functions.
+#
+# cflags SANS -Werror, volontairement (même choix que cpool_day03) :
+# la compile est jugée sur le C, la norme par l'étape Norme. Sous
+# epiclang, banana tourne à la compile et ses diagnostics de style
+# deviennent des erreurs avec -Werror — dont la C-H1 (« function
+# declaration in source file »), structurellement inévitable ici : le
+# sujet interdit de rendre my_putchar.c, chaque delivery doit donc
+# DÉCLARER `void my_putchar(char c);`. La vraie moulinette ne bloque
+# pas la compile sur le style ; nous non plus.
+#
+# FORMAT DE TEST — choix documenté : UN SEUL harness par assignment
+# qui enchaîne TOUS les appels dans l'ordre :
+#   1. les 5 cas de figure du sujet : (5,3) (5,1) (1,1) (1,5) (4,4) ;
+#   2. les 3 cas d'erreur : (0,0) (-2,3) (3,0).
+# Le sujet impose « Invalid size\n » sur STDERR pour une taille
+# invalide (x <= 0 ou y <= 0) : les 3 cas d'erreur n'écrivent RIEN
+# sur stdout et concatènent 3 × « Invalid size\n » sur stderr.
+# L'attendu est donc :
+#   - stdout_file : les 5 figures concaténées BRUTES (chaque ligne de
+#     chaque carré est '\n'-terminée, dernière comprise — comportement
+#     historique du rush) ;
+#   - stderr (champ task) : "Invalid size\nInvalid size\nInvalid size\n" ;
+#   - exit_code : 0 (le main rend la main proprement).
+# Comparaison au caractère près : stdout, puis stderr, puis exit code.
+# Un harness unique par assignment (plutôt qu'un appel par argv) garde
+# le test 1:1 avec le main du sujet (des appels en chaîne, sans
+# parsing d'argv) et rend le diff unified lisible figure par figure.
+#
+# Coins vérifiés caractère par caractère contre les figures du sujet :
+#   rush-1-1 : o---o / |   | / o---o      (coins 'o' partout, même
+#              dégénéré : (5,1)→o---o, (1,1)→o, (1,5)→o/|/|/|/o)
+#   rush-1-2 : /***\ / *   * / \***/      (dégénéré x==1||y==1 → '*')
+#   rush-1-3 : ABBBA / B   B / CBBBC      (dégénéré → 'B')
+#   rush-1-4 : ABBBC / B   B / ABBBC      (dégénéré → 'B')
+#   rush-1-5 : ABBBC / B   B / CBBBA      (dégénéré → 'B')
+# NB : les figures (4,4) du PDF extrait affichent « B B » / « | | »
+# (2 espaces intérieurs collapsés en 1 par l'extraction) — la largeur
+# réelle est 4 : « B  B », « |  | », cohérent avec les figures (5,3).
+
+[project]
+name = "cpool_rush1"
+type = "functions"
+allowed_functions = ["write", "my_putchar"]
+tests_run_rule = false
+cflags = ["-Wall", "-Wextra"]
+
+[[task]]
+name = "rush-1-1"
+delivery = "rush-1-1"
+prototype = "void rush(int x, int y)"
+harness = "cpool_rush1/harness/main_rush_1_1.c"
+extra_sources = ["cpool_rush1/harness/my_putchar.c"]
+stdout_file = "cpool_rush1/expected/rush_1_1.out"
+stderr = "Invalid size\nInvalid size\nInvalid size\n"
+exit_code = 0
+timeout_ms = 2000
+
+[[task]]
+name = "rush-1-2"
+delivery = "rush-1-2"
+prototype = "void rush(int x, int y)"
+harness = "cpool_rush1/harness/main_rush_1_2.c"
+extra_sources = ["cpool_rush1/harness/my_putchar.c"]
+stdout_file = "cpool_rush1/expected/rush_1_2.out"
+stderr = "Invalid size\nInvalid size\nInvalid size\n"
+exit_code = 0
+timeout_ms = 2000
+
+[[task]]
+name = "rush-1-3"
+delivery = "rush-1-3"
+prototype = "void rush(int x, int y)"
+harness = "cpool_rush1/harness/main_rush_1_3.c"
+extra_sources = ["cpool_rush1/harness/my_putchar.c"]
+stdout_file = "cpool_rush1/expected/rush_1_3.out"
+stderr = "Invalid size\nInvalid size\nInvalid size\n"
+exit_code = 0
+timeout_ms = 2000
+
+[[task]]
+name = "rush-1-4"
+delivery = "rush-1-4"
+prototype = "void rush(int x, int y)"
+harness = "cpool_rush1/harness/main_rush_1_4.c"
+extra_sources = ["cpool_rush1/harness/my_putchar.c"]
+stdout_file = "cpool_rush1/expected/rush_1_4.out"
+stderr = "Invalid size\nInvalid size\nInvalid size\n"
+exit_code = 0
+timeout_ms = 2000
+
+[[task]]
+name = "rush-1-5"
+delivery = "rush-1-5"
+prototype = "void rush(int x, int y)"
+harness = "cpool_rush1/harness/main_rush_1_5.c"
+extra_sources = ["cpool_rush1/harness/my_putchar.c"]
+stdout_file = "cpool_rush1/expected/rush_1_5.out"
+stderr = "Invalid size\nInvalid size\nInvalid size\n"
+exit_code = 0
+timeout_ms = 2000
