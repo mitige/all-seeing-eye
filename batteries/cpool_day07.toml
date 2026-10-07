@@ -1,0 +1,143 @@
+# Batterie cpool_day07 — C Pool Day07 « LIBMY, ARGUMENTS ».
+#
+# 6 tasks au sujet ; 5 tasks Functions + la lib couverte en [build] :
+#
+# - Task 01 (lib/my/build.sh) : couverte par [build].pre_commands
+#   (`cd lib/my && ./build.sh`, l'exemple canonique du README) — un
+#   échec du script fait échouer l'étape Build et skippe Functional,
+#   comme la vraie moulinette sans libmy.a. Pas de [[task]] dédiée :
+#   une delivery dossier `lib/my` compilerait ses 30 sources en .o à
+#   la racine de la salle blanche, et les stems my_strcat/my_strncat
+#   collisionneraient avec les deliveries racines des tasks 02/03
+#   (garde d'unicité des .o de build_functions). La lib est prouvée
+#   par l'usage : les tasks 04-06 sont linkées `-Llib/my -lmy` et
+#   appellent my_putstr/my_putchar/my_strcmp — un symbole absent de la
+#   lib y fait un KO de link.
+#
+# - Tasks 02/03 (my_strcat, my_strncat) : delivery fichier + harness
+#   de la batterie + my_putchar.c officiel (schéma cpool_day03). Le
+#   harness vérifie aussi la valeur de retour (== dest) : 'Y'/'N'.
+#
+# - Tasks 04/05/06 (my_print_params, my_rev_params, my_sort_params) :
+#   PROGRAMMES à main, delivery dossier (taskNN, tous ses *.c). Le
+#   binaire de test est exécuté en salle blanche sous un chemin
+#   absolu aléatoire : argv[0] est imprévisible, le champ `args` est
+#   donc inutilisable pour ces programmes qui affichent argv[0]. Le
+#   harness main_params.c fabrique l'argv du sujet en dur
+#   (./a.out test "This is a test " retest) et appelle le main de
+#   l'étudiant, renommé cpool_d07_student_main à la compile par le
+#   link_flags `-Dmain=cpool_d07_student_main` (-D est positionnel-
+#   indépendant : il renomme le main de la delivery ; le harness se
+#   protège par `#undef main`). Compatible avec toutes les formes de
+#   signature de main (void / argc+argv / argv[]).
+#
+# cflags SANS -Werror, comme cpool_day03 : sous epiclang, banana
+# tourne à la compile et ses diagnostics de style deviendraient des
+# erreurs — dont la C-H1 (« function declaration in source file »)
+# structurelle des task04-06 : le sujet impose d'utiliser la lib via
+# déclarations forward et dit explicitement d'ignorer C-H1 jusqu'aux
+# headers. La norme est jugée par l'étape Norme, pas par la compile.
+#
+# allowed_functions : write (seul syscall autorisé par le sujet) +
+# les 30 fonctions de la libmy — la lib est du code étudiant linké
+# dans ses programmes, jamais une dépendance externe ; la vraie
+# moulinette les résout via -lmy.
+#
+# Contrainte connue (moteur V1) : stems uniques à travers TOUTES les
+# deliveries — la fixture nomme ses programmes my_print_params.c,
+# my_rev_params.c, my_sort_params.c ; un repo avec main.c dans chaque
+# taskNN heurterait la garde anti-collision des .o de build.
+#
+# Prototypes : vérifiés en prelim pour 02/03 (orthographe exacte du
+# sujet, blancs normalisés — `char const *`), volontairement omis
+# pour 04-06 (les signatures de main varient : `char **argv` vs
+# `char *argv[]`).
+
+[project]
+name = "cpool_day07"
+type = "functions"
+allowed_functions = [
+    "write",
+    "my_putchar",
+    "my_isneg",
+    "my_put_nbr",
+    "my_swap",
+    "my_putstr",
+    "my_strlen",
+    "my_getnbr",
+    "my_sort_int_array",
+    "my_compute_power_rec",
+    "my_compute_square_root",
+    "my_is_prime",
+    "my_find_prime_sup",
+    "my_strcpy",
+    "my_strncpy",
+    "my_revstr",
+    "my_strstr",
+    "my_strcmp",
+    "my_strncmp",
+    "my_strupcase",
+    "my_strlowcase",
+    "my_strcapitalize",
+    "my_str_isalpha",
+    "my_str_isnum",
+    "my_str_islower",
+    "my_str_isupper",
+    "my_str_isprintable",
+    "my_showstr",
+    "my_showmem",
+    "my_strcat",
+    "my_strncat",
+]
+tests_run_rule = false
+cflags = ["-Wall", "-Wextra"]
+
+[build]
+pre_commands = ["cd lib/my && ./build.sh"]
+
+[[task]]
+name = "my_strcat"
+delivery = "my_strcat.c"
+prototype = "char *my_strcat(char *dest, char const *src)"
+harness = "cpool_day07/harness/main_my_strcat.c"
+extra_sources = ["cpool_day07/harness/my_putchar.c"]
+stdout_file = "cpool_day07/expected/my_strcat.out"
+exit_code = 0
+timeout_ms = 2000
+
+[[task]]
+name = "my_strncat"
+delivery = "my_strncat.c"
+prototype = "char *my_strncat(char *dest, char const *src, int nb)"
+harness = "cpool_day07/harness/main_my_strncat.c"
+extra_sources = ["cpool_day07/harness/my_putchar.c"]
+stdout_file = "cpool_day07/expected/my_strncat.out"
+exit_code = 0
+timeout_ms = 2000
+
+[[task]]
+name = "my_print_params"
+delivery = "task04"
+harness = "cpool_day07/harness/main_params.c"
+link_flags = ["-Dmain=cpool_d07_student_main", "-Llib/my", "-lmy"]
+stdout_file = "cpool_day07/expected/my_print_params.out"
+exit_code = 0
+timeout_ms = 2000
+
+[[task]]
+name = "my_rev_params"
+delivery = "task05"
+harness = "cpool_day07/harness/main_params.c"
+link_flags = ["-Dmain=cpool_d07_student_main", "-Llib/my", "-lmy"]
+stdout_file = "cpool_day07/expected/my_rev_params.out"
+exit_code = 0
+timeout_ms = 2000
+
+[[task]]
+name = "my_sort_params"
+delivery = "task06"
+harness = "cpool_day07/harness/main_params.c"
+link_flags = ["-Dmain=cpool_d07_student_main", "-Llib/my", "-lmy"]
+stdout_file = "cpool_day07/expected/my_sort_params.out"
+exit_code = 0
+timeout_ms = 2000
