@@ -425,14 +425,22 @@ pub(crate) fn select_compiler(opts: &RunOpts) -> PathBuf {
     }
 }
 
-/// Stem d'une delivery : nom de fichier sans extension (« a/foo.c » →
-/// « foo ») — le nom du `.o` produit à la racine de la salle blanche.
+/// Stem d'une delivery, namespacé par son chemin : « foo.c » → « foo »,
+/// « rush-1-1/rush.c » → « rush-1-1__rush » — le nom du `.o` produit à la
+/// racine de la salle blanche. Le namespacing évite les collisions entre
+/// deliveries en sous-dossiers homonymes (un rendu Rush1 réel livre
+/// `rush-1-1/rush.c`, `rush-1-2/rush.c`…).
 /// Partagé avec symbols.rs (Task 7) : c'est lui qui consomme les `.o`.
-pub(crate) fn stem_of(delivery: &str) -> &str {
-    Path::new(delivery)
+pub(crate) fn stem_of(delivery: &str) -> String {
+    let path = Path::new(delivery);
+    let file = path
         .file_stem()
         .and_then(|s| s.to_str())
-        .unwrap_or(delivery)
+        .unwrap_or(delivery);
+    match path.parent().and_then(|p| p.to_str()) {
+        Some("") | None => file.to_string(),
+        Some(dir) => format!("{}__{}", dir.replace('/', "__"), file),
+    }
 }
 
 /// Compile une delivery en `.o` dans la salle blanche :
@@ -527,16 +535,15 @@ fn build_functions(ctx: &PipelineContext, dir: &Path, c: &mut Collect) -> bool {
             }
         }
     }
-    // Garde d'unicité des stems (étendue aux sources des dossiers) :
-    // deux sources de même stem (« a/foo.c » et « b/foo.c »)
-    // produiraient le même `.o` à la racine de la salle blanche — le
-    // second écraserait silencieusement le premier. KO explicite avant
-    // toute compilation.
-    let mut vus: HashMap<&str, &str> = HashMap::new();
+    // Garde d'unicité des stems : avec le namespacing par chemin de
+    // stem_of (« a/foo.c » → « a__foo.o »), seules deux occurrences du
+    // MÊME chemin relatif pourraient entrer en collision — filet de
+    // sécurité conservé, KO explicite avant toute compilation.
+    let mut vus: HashMap<String, &str> = HashMap::new();
     for srcs in &sources {
         for s in srcs {
             let stem = stem_of(s);
-            if let Some(autre) = vus.insert(stem, s.as_str()) {
+            if let Some(autre) = vus.insert(stem.clone(), s.as_str()) {
                 return c.check(
                     "compile",
                     false,

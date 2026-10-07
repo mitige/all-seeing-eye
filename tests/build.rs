@@ -389,11 +389,13 @@ fn functions_syntaxe_cassee_fait_echouer_l_etape() {
     );
 }
 
-/// Batterie Functions : deux deliveries dont le stem (nom du `.o`
-/// produit) est identique — collision garantie en salle blanche.
-const COLLISION_TOML: &str = r#"
+/// Batterie Functions : deux deliveries de même stem en sous-dossiers
+/// différents — depuis le namespacing des stems (« a/foo.c » →
+/// « a__foo.o », « b/foo.c » → « b__foo.o »), ce n'est PLUS une
+/// collision (rendu Rush1 réel : rush-1-1/rush.c, rush-1-2/rush.c…).
+const HOMONYME_TOML: &str = r#"
 [project]
-name = "collision"
+name = "homonyme"
 type = "functions"
 
 [[task]]
@@ -410,8 +412,8 @@ stdout = ""
 "#;
 
 #[test]
-fn functions_stems_en_collision_ko_explicite() {
-    let (_bat_dir, battery) = load_battery(COLLISION_TOML);
+fn functions_stems_homonymes_namespaces_ok() {
+    let (_bat_dir, battery) = load_battery(HOMONYME_TOML);
     let target = TempDir::new().unwrap();
     fs::create_dir(target.path().join("a")).unwrap();
     fs::create_dir(target.path().join("b")).unwrap();
@@ -426,15 +428,63 @@ fn functions_stems_en_collision_ko_explicite() {
     )
     .unwrap();
 
+    let (ok, _events, ctx) = run_build(&battery, target.path());
+    assert!(ok, "stems homonymes namespacés : build OK attendu");
+    let white = ctx
+        .build
+        .as_ref()
+        .expect("ctx.build posé")
+        .dir
+        .path()
+        .to_path_buf();
+    for obj in ["a__foo.o", "b__foo.o"] {
+        assert!(
+            white.join(obj).is_file(),
+            "{obj} absent de la salle blanche : {:?}",
+            root_entries(&white)
+        );
+    }
+}
+
+/// Batterie Functions : la MÊME delivery livrée par deux tasks —
+/// seule vraie collision possible (même chemin → même .o).
+const COLLISION_TOML: &str = r#"
+[project]
+name = "collision"
+type = "functions"
+
+[[task]]
+name = "ex01"
+delivery = "a/foo.c"
+harness = "harness/ex01_main.c"
+stdout = ""
+
+[[task]]
+name = "ex02"
+delivery = "a/foo.c"
+harness = "harness/ex02_main.c"
+stdout = ""
+"#;
+
+#[test]
+fn functions_stems_en_collision_ko_explicite() {
+    let (_bat_dir, battery) = load_battery(COLLISION_TOML);
+    let target = TempDir::new().unwrap();
+    fs::create_dir(target.path().join("a")).unwrap();
+    fs::write(
+        target.path().join("a/foo.c"),
+        "int foo_a(void)\n{\n    return 1;\n}\n",
+    )
+    .unwrap();
+
     let (ok, events, _ctx) = run_build(&battery, target.path());
-    assert!(!ok, "deux deliveries de même stem doivent être KO");
+    assert!(!ok, "deux tasks livrant le même fichier doivent être KO");
     let checks = extract_checks(&events);
     assert!(
         checks.iter().any(|(name, ok, d)| name == "compile"
             && !*ok
             && d.contains("collision")
-            && d.contains("a/foo.c")
-            && d.contains("b/foo.c")),
+            && d.contains("a/foo.c")),
         "KO 'collision de .o' absent ou muet : {checks:?}"
     );
 }
@@ -580,10 +630,11 @@ fn functions_delivery_en_sous_dossier_objet_a_la_racine() {
         .path()
         .to_path_buf();
     // Contrat Task 7 : le .o est à la racine de la salle blanche,
-    // nommé d'après le stem de la delivery.
+    // nommé d'après le stem NAMESPACÉ de la delivery (« src/my_fn.c »
+    // → « src__my_fn.o » — anti-collision entre sous-dossiers).
     assert!(
-        white.join("my_fn.o").is_file(),
-        "my_fn.o absent de la racine : {:?}",
+        white.join("src__my_fn.o").is_file(),
+        "src__my_fn.o absent de la racine : {:?}",
         root_entries(&white)
     );
     assert!(white.join("src/my_fn.c").is_file(), "delivery non copiée");
@@ -650,8 +701,9 @@ fn functions_delivery_dossier_compile_chaque_c_en_o_tries() {
         .path()
         .to_path_buf();
     // Contrat : un .o par source du dossier, à la racine, nommé d'après
-    // le stem du fichier.
-    for obj in ["a_part.o", "b_part.o"] {
+    // le stem NAMESPACÉ du fichier (« rush-1-1/a_part.c » →
+    // « rush-1-1__a_part.o »).
+    for obj in ["rush-1-1__a_part.o", "rush-1-1__b_part.o"] {
         assert!(
             white.join(obj).is_file(),
             "{obj} absent de la salle blanche : {:?}",
@@ -718,7 +770,7 @@ stdout = ""
 "#;
 
 #[test]
-fn functions_delivery_dossier_collision_de_stem_ko() {
+fn functions_delivery_dossier_stem_namespaces_ok() {
     let (_bat_dir, battery) = load_battery(COLLISION_DIR_TOML);
     let target = TempDir::new().unwrap();
     fs::create_dir(target.path().join("rush-1-1")).unwrap();
@@ -733,17 +785,24 @@ fn functions_delivery_dossier_collision_de_stem_ko() {
     )
     .unwrap();
 
-    let (ok, events, _ctx) = run_build(&battery, target.path());
-    assert!(!ok, "stems en collision via un dossier : KO attendu");
-    let checks = extract_checks(&events);
-    assert!(
-        checks.iter().any(|(n, ok, d)| n == "compile"
-            && !*ok
-            && d.contains("collision")
-            && d.contains("rush-1-1/foo.c")
-            && d.contains("foo.c")),
-        "KO 'collision de .o' (dossier) absent ou muet : {checks:?}"
-    );
+    // « rush-1-1/foo.c » → « rush-1-1__foo.o » vs « foo.c » → « foo.o » :
+    // plus de collision depuis le namespacing (rendu Rush1 réel).
+    let (ok, _events, ctx) = run_build(&battery, target.path());
+    assert!(ok, "stems namespacés : build OK attendu");
+    let white = ctx
+        .build
+        .as_ref()
+        .expect("ctx.build posé")
+        .dir
+        .path()
+        .to_path_buf();
+    for obj in ["rush-1-1__foo.o", "foo.o"] {
+        assert!(
+            white.join(obj).is_file(),
+            "{obj} absent : {:?}",
+            root_entries(&white)
+        );
+    }
 }
 
 /// Batterie Rush2-like : la lib est construite par une pre_command,

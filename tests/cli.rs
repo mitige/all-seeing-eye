@@ -435,11 +435,18 @@ fn list_aplatit_les_erreurs_toml_multilignes() {
     let stdout = stdout(&out);
     assert!(out.status.success(), "list KO : {}", stderr(&out));
     let lignes: Vec<&str> = stdout.lines().collect();
-    // cassee + e2e_cli (config) + cpool_day03 (embarquée, Task 13).
+    // cassee + e2e_cli (config) + les batteries embarquées — dont le
+    // nombre grandit au fil des jours couverts : on les compte
+    // dynamiquement plutôt que de figer un total.
+    let embarquees = lignes.iter().filter(|l| l.contains("embarquée")).count();
+    assert!(
+        embarquees >= 1,
+        "au moins cpool_day03 doit être embarquée\n{stdout}"
+    );
     assert_eq!(
         lignes.len(),
-        3,
-        "une ligne par batterie attendue (cassee + e2e_cli + embarquée)\n{stdout}"
+        2 + embarquees,
+        "une ligne par batterie attendue (cassee + e2e_cli + embarquées)\n{stdout}"
     );
     let cassee = lignes
         .iter()
