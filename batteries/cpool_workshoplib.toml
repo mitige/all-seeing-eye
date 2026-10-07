@@ -1,0 +1,135 @@
+# Batterie cpool_workshoplib — C Pool WorkshopLib « AUTONOMOUS WORK ON
+# YOUR LIBRARY ». Projet BINARY dont le produit est une lib statique :
+# binary = "lib/libmy.a", non exécutable — chaque [[functional_test]]
+# porte donc un `harness` (schéma prévu par le README : le harness est
+# compilé et linké contre le produit, et c'est lui qui est exécuté).
+#
+# LAYOUT DU RENDU (sujet) : Makefile à la RACINE (le prelim binary
+# sonde ctx.target/Makefile — `make -n all/clean/fclean/re`), sources
+# de la lib dans lib/my/*.c, header dans include/my.h, archive produite
+# dans lib/libmy.a par `make re`. La phrase du sujet « your library and
+# its Makefile must be stored in lib/my/ and include/ » décrit le
+# rangement des SOURCES et du header ; le binaire annoncé
+# (lib/libmy.a) est relatif à la racine, le Makefile pilote donc depuis
+# la racine. pre_commands re-sonde la présence du header (le sujet
+# l'impose dans include/) — absent, le build échoue avant même make.
+#
+# COUVERTURE — les 30 fonctions du sujet, en 7 groupes/harness :
+# - wl_put  : my_putchar, my_isneg, my_put_nbr, my_putstr
+#             (affichage brut ; isneg N/P, put_nbr avec INT_MIN/MAX)
+# - wl_copy : my_strcpy, my_strncpy, my_strcat, my_strncat
+#             (contenu + valeur de retour == dest : Y/N ; strncpy
+#             n>len impose le \0 final — buffer pré-rempli de 'X')
+# - wl_str  : my_strlen, my_revstr, my_strstr, my_strcmp, my_strncmp
+#             (strcmp/strncmp réduits au SIGNE : la valeur exacte n'est
+#             pas imposée par le sujet, le signe si — « same values as
+#             man 3 strcmp » ; strstr absent → « NULL » imprimé par le
+#             harness, needle vide → str)
+# - wl_case : my_strupcase, my_strlowcase, my_strcapitalize
+#             (dont la phrase canonique du sujet day06 :
+#             « hey, how are you? 42WORds forty-two; fifty+one » →
+#             « Hey, How Are You? 42words Forty-Two; Fifty+One »)
+# - wl_is   : my_str_isalpha, my_str_isnum, my_str_islower,
+#             my_str_isupper, my_str_isprintable
+#             (1 sur vide ; isprintable : \t, 0x7f, 0x01 → 0)
+# - wl_math : my_swap, my_sort_int_array, my_compute_power_rec,
+#             my_compute_square_root, my_is_prime, my_find_prime_sup,
+#             my_getnbr (sqrt non-entier → 0 ; power<0 → 0 ;
+#             getnbr : les 4 exemples piégeux du sujet day04, signes
+#             multiples, overflow → 0, INT_MIN/INT_MAX)
+# - wl_show : my_showstr, my_showmem
+#             (showstr : \n → \0a, \t → \09, 0x01/0x7f → \01/\7f ;
+#             showmem : le buffer exact de l'exemple du sujet day06,
+#             79 octets → 5 lignes, format canonique 3 colonnes
+#             « adresse: hex paires | ascii, non-imprimables en '.' »,
+#             plus une ligne courte (3 octets, padding) et size=0)
+#
+# HARNESS — style maison (comme cpool_day07) : pas de stdio, sortie
+# via my_putchar de la lib (aucun mélange printf bufferisé / write(1)
+# brut — l'ordre des octets est déterministe). Les prototypes sont
+# DÉCLARÉS dans le harness, pas inclus depuis include/my.h : un my.h
+# étudiant boiteux ne doit pas masquer le comportement de la lib (le
+# header est vérifié à part : pre_commands + étape Norme). Un harness
+# par groupe, une ligne de sortie par sous-cas, expected revérifiés
+# contre la fixture tests/fixtures/cpool_workshoplib_solution_ok.
+#
+# allowed_functions VIDE — volontaire : l'étape Symbols parse le
+# produit via object::File::parse, qui ne sait PAS lire les archives
+# statiques (« Unsupported file format » — vérifié empiriquement,
+# object 0.36.7). Whitelister quoi que ce soit produirait un KO
+# systématique « artefact illisible » sur tout rendu conforme ; vide,
+# l'étape est skippée (skip de configuration). Le jour où Symbols
+# sait itérer les membres d'une .a, la whitelist canonique est
+# [ "write" ] (seul syscall licite de la libmy).
+#
+# cflags SANS -Werror (comme cpool_day03/day07/day12) : sous epiclang,
+# banana tourne à la compile et ses warnings de style ne doivent pas
+# faire échouer le link des harness. Les cflags sont aussi sondés dans
+# le Makefile du rendu (check_cflags, non bloquant) : la fixture
+# déclare CFLAGS = -Wall -Wextra.
+#
+# tests_run_rule = false : le sujet ne prévoit pas de tests_run.
+#
+# Sensibilité vérifiée : un my_strlen off-by-one dans la fixture fait
+# échouer wl_str → functional 6/7 → score global 85.7, exit 1.
+
+[project]
+name = "cpool_workshoplib"
+type = "binary"
+binary = "lib/libmy.a"
+makefile_rules = ["all", "clean", "fclean", "re"]
+cflags = ["-Wall", "-Wextra"]
+allowed_functions = []
+tests_run_rule = false
+
+[build]
+pre_commands = ["test -f include/my.h"]
+
+[[functional_test]]
+name = "wl_put"
+harness = "cpool_workshoplib/harness/main_wl_put.c"
+stdout_file = "cpool_workshoplib/expected/wl_put.out"
+exit_code = 0
+timeout_ms = 2000
+
+[[functional_test]]
+name = "wl_copy"
+harness = "cpool_workshoplib/harness/main_wl_copy.c"
+stdout_file = "cpool_workshoplib/expected/wl_copy.out"
+exit_code = 0
+timeout_ms = 2000
+
+[[functional_test]]
+name = "wl_str"
+harness = "cpool_workshoplib/harness/main_wl_str.c"
+stdout_file = "cpool_workshoplib/expected/wl_str.out"
+exit_code = 0
+timeout_ms = 2000
+
+[[functional_test]]
+name = "wl_case"
+harness = "cpool_workshoplib/harness/main_wl_case.c"
+stdout_file = "cpool_workshoplib/expected/wl_case.out"
+exit_code = 0
+timeout_ms = 2000
+
+[[functional_test]]
+name = "wl_is"
+harness = "cpool_workshoplib/harness/main_wl_is.c"
+stdout_file = "cpool_workshoplib/expected/wl_is.out"
+exit_code = 0
+timeout_ms = 2000
+
+[[functional_test]]
+name = "wl_math"
+harness = "cpool_workshoplib/harness/main_wl_math.c"
+stdout_file = "cpool_workshoplib/expected/wl_math.out"
+exit_code = 0
+timeout_ms = 2000
+
+[[functional_test]]
+name = "wl_show"
+harness = "cpool_workshoplib/harness/main_wl_show.c"
+stdout_file = "cpool_workshoplib/expected/wl_show.out"
+exit_code = 0
+timeout_ms = 2000

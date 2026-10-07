@@ -1,0 +1,5 @@
+isalpha: 1 0 1 
+isnum: 1 0 1 
+islower: 1 0 1 
+isupper: 1 0 1 
+isprintable: 1 0 0 0 1 
