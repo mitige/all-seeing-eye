@@ -1,5 +1,15 @@
 # All-Seeing Eye
 
+## Installation (une ligne, toute distro Linux x86_64)
+
+```sh
+mkdir -p ~/.local/bin && curl -sSL https://github.com/mitige/all-seeing-eye/releases/latest/download/all-seeing-eye -o ~/.local/bin/all-seeing-eye && chmod +x ~/.local/bin/all-seeing-eye
+```
+
+Binaire **statique** (musl) de la [dernière release](https://github.com/mitige/all-seeing-eye/releases/latest) — zéro dépendance, aucune compilation. Vérifie : `all-seeing-eye list`.
+
+---
+
 **Copie 1:1 de la moulinette Epitech** pour le programme **Bachelor**
 (3 ans) et sa toute nouvelle **piscine C** (promo 2026-2027) — en
 **local**, sur ta machine, avant le push.
@@ -42,7 +52,7 @@ global est la moyenne simple des groupes.
 
 ## Installation
 
-Prérequis : Rust stable, `cc`/`gcc`, `make`. Optionnels : `epiclang`
+Prérequis (build depuis les sources uniquement) : Rust stable, `cc`/`gcc`, `make`. Optionnels : `epiclang`
 (norme officielle 1:1), `banana-check-repo` (contrôles C-O en prelim),
 `gcovr` (couverture relayée après `tests_run`), criterion (consommé
 par les `make tests_run` des rendus).
