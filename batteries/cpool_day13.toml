@@ -1,0 +1,172 @@
+# Batterie cpool_day13 — C Pool Day13 « CSFML DISCOVERY ».
+#
+# 4 tasks au sujet (fenêtre, pixel, carré, image BMP) ; 6 [[task]]
+# ici : le framebuffer (Task 02) est éclaté en create/destroy/draw_
+# pixel, le carré (Task 03) est my_draw_square, la fenêtre (Task 01)
+# et l'image (Task 04) sont des programmes à main.
+#
+# ── DÉPENDANCE CSFML ────────────────────────────────────────────────
+# Toutes les tasks linkent `-lcsfml-graphics` et les deliveries
+# incluent <SFML/Graphics.h> : la batterie est correcte sur une
+# machine qui a CSFML (dump Epitech) et ÉCHOUE PROPREMENT sinon —
+# `compile failed: window.c` + « SFML/Graphics.h: No such file or
+# directory » à l'étape Build si les headers manquent, ou « cannot
+# find -lcsfml-graphics » au link si la lib manque. Rien n'est
+# installé, rien n'est silencieusement skipped.
+#
+# Validation locale SANS csfml (preuve de bon fonctionnement quand la
+# lib existe) : un stub minimal est compilé dans /tmp — headers
+# (sfColor, sfUint8, sfVector2u, sfVideoMode, sfEvent, sfRenderWindow,
+# sfTexture, sfSprite) + libcsfml-graphics.so factice exportant les
+# symboles utilisés (cc -shared -fPIC). Le run se fait avec
+# C_INCLUDE_PATH=/tmp/day13_stub/include (compile -c et harness),
+# LIBRARY_PATH=/tmp/day13_stub/lib (link -lcsfml-graphics),
+# LD_LIBRARY_PATH=/tmp/day13_stub/lib (exécution) — trois variables
+# héritées par les sous-processus (run_capture hérite l'environnement,
+# cf. src/exec.rs), le TOML ne porte que `-lcsfml-graphics`, comme sur
+# un dump réel.
+#
+# ── CONTRAT framebuffer_t ───────────────────────────────────────────
+# Le sujet (extrait PDF v4) est un brouillon incohérent : il typedef
+# `framebuffer_t` puis prototype put_pixel avec `t_framebuffer`, sans
+# figer les noms de champs. Le canon retenu (sujets récents, dumps) :
+#   framebuffer_t *framebuffer_create(unsigned int width, unsigned int height);
+#   void framebuffer_destroy(framebuffer_t *framebuffer);
+#   void my_draw_pixel(framebuffer_t *framebuffer, unsigned int x,
+#       unsigned int y, sfColor color);
+#   void my_draw_square(framebuffer_t *framebuffer, sfVector2u position,
+#       unsigned int size, sfColor color);
+# Les harness définissent la structure À L'IDENTIQUE (pattern
+# cpool_day09 info_param : deux TUs, deux définitions compatibles) via
+# harness/d13_framebuffer.h — contrat de layout imposé, documenté :
+# champs width, height, pixels DANS CET ORDRE ; pixels = tableau
+# sfUint8 RGBA contigu de width * height * 4 octets.
+#
+# ── CE QUI EST TESTÉ (headless, sans fenêtre) ───────────────────────
+# - framebuffer_create : retour non NULL, champs width/height, pixels
+#   non NULL ET TOUS À ZÉRO (comportement canonique : calloc) pour
+#   80x60 et 1x1 ;
+# - framebuffer_destroy : interception de free() au link
+#   (`-Wl,--wrap=free` — le harness définit __wrap_free qui enregistre
+#   les pointeurs puis relaie à __real_free) : exactement DEUX free
+#   attendus, pixels et le framebuffer, ordre indifférent. Un destroy
+#   no-op, partiel ou double est KO (le double-free crashe) ;
+# - my_draw_pixel : octets RGBA vérifiés aux offsets
+#   (y * width + x) * 4 … +3 sur (0,0) couleur {0,0,0,0}, (10,10)
+#   {255,0,0,255} et (79,59) {1,2,3,4} dans un 80x60, plus scan plein
+#   cadre (exactement 2 pixels allumés : pas d'effet de bord) ;
+# - my_draw_square : bloc 5x5 bleu à (10,10) + carré 1x1 rouge à
+#   (0,0) dans un 50x50, octets vérifiés, scan plein cadre (26 pixels
+#   allumés). La delivery est ISOLÉE : si elle appelle my_draw_pixel
+#   sans le définir, le harness en fournit une implémentation de
+#   référence en symbole FAIBLE (__attribute__((weak)) — une
+#   définition étudiante, symbole fort, prime toujours).
+# Hors limites (x >= width…) : NON testé — le sujet ne le spécifie
+# pas ; la solution de référence se protège mais n'impose rien.
+#
+# ── TASKS FENÊTRE / EVENTS (Task 01, Task 04) ───────────────────────
+# Non exécutables en salle blanche headless (ouvrir une fenêtre exige
+# un display ; « keep it open » bouclerait jusqu'au timeout). Couvert
+# par : existence + lisibilité en prelim, compile `-Wall -Wextra`, et
+# LINK RÉEL contre la vraie lib — le main de la delivery est renommé
+# cpool_d13_student_main via `-Dmain=` (pattern cpool_day07 ; le
+# harness se protège par `#undef main`) et n'est JAMAIS appelé : toute
+# référence sfRenderWindow_*/sfTexture_*/sfSprite_* de la delivery
+# doit résoudre dans libcsfml-graphics. La boucle d'events du sujet
+# (sfRenderWindow_pollEvent, sfEvtClosed, Échap) vit dans window.c —
+# couverte par ce même existence + compile + link. Limite documentée :
+# un main vide de fenêtre passerait (comportement d'affichage non
+# vérifiable sans display) — la vraie moulinette non plus n'ouvre pas
+# de fenêtre.
+#
+# ── DIVERS ──────────────────────────────────────────────────────────
+# cflags SANS -Werror (parité cpool_day03/07/09) : sous epiclang,
+# banana tourne à la compile et ses diagnostics de style deviendraient
+# des erreurs — dont la C-H1 structurelle d'un étudiant qui DÉCLARE
+# my_draw_pixel dans my_draw_square.c faute de header (le sujet
+# n'impose pas de .h). La norme est jugée par l'étape Norme.
+#
+# allowed_functions VIDE → étape Symboles désactivée : la surface
+# CSFML utilisable n'est pas whitelistable proprement (des dizaines de
+# sf* légitimes), et c'est le link contre la vraie lib qui prouve
+# l'usage — pas une liste de symboles.
+#
+# Norme de la solution de référence : clean SAUF 3 C-F7 structurels —
+# le sujet impose sfColor et sfVector2u PAR COPIE dans les signatures
+# de my_draw_pixel (1) et my_draw_square (2) ; toute solution conforme
+# au sujet les porte. Le framebuffer.h du fixture ne déclare que
+# create/destroy : déclarer my_draw_* y cascaderait ces C-F7 dans
+# chaque TU qui l'inclut (comportement banana). my_draw_square du
+# fixture est auto-contenu (n'appelle PAS my_draw_pixel) : la delivery
+# isolée n'a besoin d'aucune déclaration (pas de C-H1) ; le my_draw_
+# pixel FAIBLE du harness reste pour les deliveries qui l'appellent.
+#
+# Prototypes prelim : orthographe exacte du canon ci-dessus, blancs
+# normalisés (le fixture les coupe à 80 colonnes — le match est sur le
+# contenu normalisé). Pas de prototype pour open_window/display_image
+# : le sujet ne nomme aucune fonction (programmes à main).
+
+[project]
+name = "cpool_day13"
+type = "functions"
+allowed_functions = []
+tests_run_rule = false
+cflags = ["-Wall", "-Wextra"]
+
+[[task]]
+name = "open_window"
+delivery = "window.c"
+harness = "cpool_day13/harness/main_open_window.c"
+link_flags = ["-Dmain=cpool_d13_student_main", "-lcsfml-graphics"]
+stdout_file = "cpool_day13/expected/open_window.out"
+exit_code = 0
+timeout_ms = 2000
+
+[[task]]
+name = "framebuffer_create"
+delivery = "framebuffer_create.c"
+prototype = "framebuffer_t *framebuffer_create(unsigned int width, unsigned int height)"
+harness = "cpool_day13/harness/main_framebuffer_create.c"
+link_flags = ["-lcsfml-graphics"]
+stdout_file = "cpool_day13/expected/framebuffer_create.out"
+exit_code = 0
+timeout_ms = 2000
+
+[[task]]
+name = "framebuffer_destroy"
+delivery = "framebuffer_destroy.c"
+prototype = "void framebuffer_destroy(framebuffer_t *framebuffer)"
+harness = "cpool_day13/harness/main_framebuffer_destroy.c"
+link_flags = ["-Wl,--wrap=free", "-lcsfml-graphics"]
+stdout_file = "cpool_day13/expected/framebuffer_destroy.out"
+exit_code = 0
+timeout_ms = 2000
+
+[[task]]
+name = "my_draw_pixel"
+delivery = "my_draw_pixel.c"
+prototype = "void my_draw_pixel(framebuffer_t *framebuffer, unsigned int x, unsigned int y, sfColor color)"
+harness = "cpool_day13/harness/main_my_draw_pixel.c"
+link_flags = ["-lcsfml-graphics"]
+stdout_file = "cpool_day13/expected/my_draw_pixel.out"
+exit_code = 0
+timeout_ms = 2000
+
+[[task]]
+name = "my_draw_square"
+delivery = "my_draw_square.c"
+prototype = "void my_draw_square(framebuffer_t *framebuffer, sfVector2u position, unsigned int size, sfColor color)"
+harness = "cpool_day13/harness/main_my_draw_square.c"
+link_flags = ["-lcsfml-graphics"]
+stdout_file = "cpool_day13/expected/my_draw_square.out"
+exit_code = 0
+timeout_ms = 2000
+
+[[task]]
+name = "display_image"
+delivery = "image.c"
+harness = "cpool_day13/harness/main_display_image.c"
+link_flags = ["-Dmain=cpool_d13_student_main", "-lcsfml-graphics"]
+stdout_file = "cpool_day13/expected/display_image.out"
+exit_code = 0
+timeout_ms = 2000
