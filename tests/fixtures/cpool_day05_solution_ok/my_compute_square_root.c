@@ -1,0 +1,19 @@
+/*
+** EPITECH PROJECT, 2026
+** cpool_day05
+** File description:
+** my_compute_square_root
+*/
+
+int my_compute_square_root(int nb)
+{
+    long i = 0;
+
+    if (nb <= 0)
+        return (0);
+    while (i * i < nb)
+        i = i + 1;
+    if (i * i == (long)nb)
+        return ((int)i);
+    return (0);
+}

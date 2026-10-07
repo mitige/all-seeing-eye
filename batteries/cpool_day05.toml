@@ -1,0 +1,124 @@
+# Batterie cpool_day05 — C Pool Day05 « Recursivity ».
+#
+# 8 exercices : factorielle (it/rec), puissance (it/rec), racine
+# carrée entière, primalité, prime sup, n reines. Contrairement au
+# Day03, les fonctions du Day05 RETOURNENT un int et n'impriment
+# rien : aucune n'a besoin de my_putchar côté étudiant (pas de C-H1
+# structurelle ici). Comme la vraie moulinette qui ajoute SES main.c
+# et my_putchar.c, chaque task est compilée avec le harness de la
+# batterie (harness/main_<task>.c + harness/my_putchar.c officiel) ;
+# le harness formate chaque valeur de retour via my_putchar, à raison
+# d'UN résultat par ligne ('\n' final compris) — le format du sujet
+# pour count_valid_queens_placements (« ./a.out 4 » → « 2\n»).
+#
+# cflags SANS -Werror, comme cpool_day03 : la compile est jugée sur le
+# C, la norme par l'étape Norme (sous epiclang, banana tourne à la
+# compile et ses diagnostics deviennent des erreurs avec -Werror).
+#
+# Cas couverts par les harness (sujet : « 0! = 1 », « n < 0 → 0 »,
+# « n^0 = 1 », « p < 0 → 0 », « Overflows must be handled (as
+# errors) » → 0, « 0 and 1 are not prime », réponse < 2 s) :
+# - factorial : 0 → 1, 1 → 1, 5 → 120, 10 → 3628800, négatifs → 0,
+#   12 → 479001600 (dernier qui tient dans un int), 13 et 100 → 0
+#   (overflow) ;
+# - power : n^0 → 1 (dont 0^0), 1^5, 2^10 → 1024, 3^4 → 81,
+#   (-3)^3 → -27, (-2)^4 → 16, p < 0 → 0, 0^5 → 0, 10^10 et 2^31 → 0
+#   (overflow) ;
+# - square_root : 0 → 0, carrés parfaits (1, 4, 9, 16, 25), non-carrés
+#   (17, INT_MAX) → 0, négatif → 0, 2147395600 = 46340² (plus grand
+#   carré ≤ INT_MAX — un i*i en int déborde à 46341) ;
+# - is_prime : négatifs, 0, 1 → 0 ; 2, 3, 97 → 1 ; 4, 9, 100 → 0 ;
+#   INT_MAX = 2³¹−1 → 1 (premier de Mersenne — impose la borne √n pour
+#   rester < 2 s), INT_MAX−1 → 0 ;
+# - find_prime_sup : ≤ 2 → 2, 3 → 3, 4 → 5, 14 → 17, 100 → 101,
+#   2147483640 → 2147483647 ;
+# - queens : n = 1..8 et 10 → 1, 0, 0, 2, 10, 4, 40, 92, 724 (les cinq
+#   premières valeurs sont celles de l'exemple du sujet ; la suite est
+#   A000170).
+
+[project]
+name = "cpool_day05"
+type = "functions"
+allowed_functions = ["my_putchar"]
+tests_run_rule = false
+cflags = ["-Wall", "-Wextra"]
+
+[[task]]
+name = "my_compute_factorial_it"
+delivery = "my_compute_factorial_it.c"
+prototype = "int my_compute_factorial_it(int nb)"
+harness = "cpool_day05/harness/main_my_compute_factorial_it.c"
+extra_sources = ["cpool_day05/harness/my_putchar.c"]
+stdout_file = "cpool_day05/expected/my_compute_factorial_it.out"
+exit_code = 0
+timeout_ms = 2000
+
+[[task]]
+name = "my_compute_factorial_rec"
+delivery = "my_compute_factorial_rec.c"
+prototype = "int my_compute_factorial_rec(int nb)"
+harness = "cpool_day05/harness/main_my_compute_factorial_rec.c"
+extra_sources = ["cpool_day05/harness/my_putchar.c"]
+stdout_file = "cpool_day05/expected/my_compute_factorial_rec.out"
+exit_code = 0
+timeout_ms = 2000
+
+[[task]]
+name = "my_compute_power_it"
+delivery = "my_compute_power_it.c"
+prototype = "int my_compute_power_it(int nb, int p)"
+harness = "cpool_day05/harness/main_my_compute_power_it.c"
+extra_sources = ["cpool_day05/harness/my_putchar.c"]
+stdout_file = "cpool_day05/expected/my_compute_power_it.out"
+exit_code = 0
+timeout_ms = 2000
+
+[[task]]
+name = "my_compute_power_rec"
+delivery = "my_compute_power_rec.c"
+prototype = "int my_compute_power_rec(int nb, int p)"
+harness = "cpool_day05/harness/main_my_compute_power_rec.c"
+extra_sources = ["cpool_day05/harness/my_putchar.c"]
+stdout_file = "cpool_day05/expected/my_compute_power_rec.out"
+exit_code = 0
+timeout_ms = 2000
+
+[[task]]
+name = "my_compute_square_root"
+delivery = "my_compute_square_root.c"
+prototype = "int my_compute_square_root(int nb)"
+harness = "cpool_day05/harness/main_my_compute_square_root.c"
+extra_sources = ["cpool_day05/harness/my_putchar.c"]
+stdout_file = "cpool_day05/expected/my_compute_square_root.out"
+exit_code = 0
+timeout_ms = 2000
+
+[[task]]
+name = "my_is_prime"
+delivery = "my_is_prime.c"
+prototype = "int my_is_prime(int nb)"
+harness = "cpool_day05/harness/main_my_is_prime.c"
+extra_sources = ["cpool_day05/harness/my_putchar.c"]
+stdout_file = "cpool_day05/expected/my_is_prime.out"
+exit_code = 0
+timeout_ms = 2000
+
+[[task]]
+name = "my_find_prime_sup"
+delivery = "my_find_prime_sup.c"
+prototype = "int my_find_prime_sup(int nb)"
+harness = "cpool_day05/harness/main_my_find_prime_sup.c"
+extra_sources = ["cpool_day05/harness/my_putchar.c"]
+stdout_file = "cpool_day05/expected/my_find_prime_sup.out"
+exit_code = 0
+timeout_ms = 2000
+
+[[task]]
+name = "count_valid_queens_placements"
+delivery = "count_valid_queens_placements.c"
+prototype = "int count_valid_queens_placements(int n)"
+harness = "cpool_day05/harness/main_count_valid_queens_placements.c"
+extra_sources = ["cpool_day05/harness/my_putchar.c"]
+stdout_file = "cpool_day05/expected/count_valid_queens_placements.out"
+exit_code = 0
+timeout_ms = 2000
