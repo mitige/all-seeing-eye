@@ -1,0 +1,164 @@
+# Batterie cpool_day12 — C Pool Day12 « File Descriptors ».
+#
+# Couvre la task 01 « cat » (delivery cat/* : programme complet +
+# Makefile dans le SOUS-DOSSIER cat/, binaire cat/cat). Tasks du
+# sujet non couvertes, et pourquoi :
+# - task 02 « Testing cat » : l'étape Unit lance `make tests_run` à
+#   la RACINE de la salle blanche ; le sujet day12 met la règle
+#   tests_run dans cat/Makefile (delivery tests/* + cat/Makefile) et
+#   V1 n'a pas de cwd par étape — tests_run_rule = false, documenté.
+# - task 03 « grep » : le schéma n'a qu'UN champ `binary` par
+#   batterie ; grep est un second binaire complet (build + tests)
+#   — hors de portée d'une seule batterie binary.
+# - task 04 « Testing grep » : idem task 02.
+# - « read de taille 1 interdit » et « buffer ~30 ko » (limit
+#   stacksize 32) : non vérifiables mécaniquement en V1 (pas de
+#   strace ni d'rlimit par test) ; le test cat_big_file pousse 68 000
+#   octets (> 2 × 30 720) — un buffer fixe conforme ne tient pas le
+#   fichier en une passe, la boucle de lecture est donc validée.
+#
+# BUILD SUR MESURE — le Makefile est dans cat/, pas à la racine :
+# [build].command remplace `make fclean && make re` (racine) par
+# `make -C cat …`. Effets de bord assumés et compensés :
+# - le prelim SKIPPE ses sondes de règles Makefile quand
+#   [build].command existe → les 4 règles du sujet (all, clean,
+#   fclean, re) sont re-sondées ici en pre_commands (`make -C cat
+#   -n <règle>` : KO « pre_command failed » si la règle manque) ;
+# - le check des cflags ne s'applique qu'avec un Makefile à la
+#   racine → sans objet ici (le sujet day12 n'impose d'ailleurs
+#   aucun flag ; le champ cflags ci-dessous est purement
+#   documentaire) ;
+# - la présence du binaire annoncé (cat/cat) reste vérifiée après
+#   la commande, comme sur le chemin make standard.
+# La commande chaîne enfin la sonde « ne relinke pas » du sujet :
+# après `make re`, un second `make all` ne doit RIEN refaire —
+# détecté par mtime (stat -c %y, nanosecondes) du binaire, pas par
+# le message de make : un .PHONY bien écrit passe, un Makefile qui
+# relinke échoue en « build failed ».
+#
+# DONNÉES DE TEST — deux canaux, même contenu canonique :
+# 1. les pre_commands les (ré)écrivent dans la salle blanche
+#    (cat/data/*) — la batterie fonctionne donc sur N'IMPORTE QUEL
+#    rendu, même sans fichiers de test livrés ;
+# 2. la fixture de référence (tests/fixtures/cpool_day12_solution_ok)
+#    les embarque tels quels — ils sont alors copiés en salle blanche
+#    puis réécrits à l'identique.
+# secret.txt est en plus chmodé 000 en salle blanche (test EACCES) ;
+# dans la fixture il reste en 644 (un 000 versionné casserait la
+# copie elle-même). Les chemins passés à cat sont RELATIFS (cwd des
+# tests fonctionnels = salle blanche) : le message d'erreur attendu
+# est déterministe.
+#
+# ERREURS — format du vrai cat GNU (LC_ALL=C), comme l'exemple grep
+# du sujet : « cat: <fichier>: <message>\n » sur STDERR, exit 84, et
+# cat CONTINUE sur les fichiers suivants (test
+# cat_error_between_files). perror est interdit par le sujet et
+# strerror n'est pas whitelisté : le message est attendu en clair,
+# indépendant de la locale. Le préfixe est le littéral « cat: »
+# (argv[0] absolu rendrait le message non déterministe).
+#
+# allowed_functions : le sujet — open, read, write, close — plus
+# __errno_location (le sujet autorise errno, qui expande en
+# (*__errno_location())). Volontairement strict : pas de strlen ni de
+# variantes fortifiées (__open_2…) — un rendu day12 se compile sans
+# -O2/-D_FORTIFY_SOURCE.
+
+[project]
+name = "cpool_day12"
+type = "binary"
+binary = "cat/cat"
+cflags = ["-Wall", "-Wextra"]
+allowed_functions = ["open", "read", "write", "close", "__errno_location"]
+tests_run_rule = false
+
+[build]
+pre_commands = [
+    "make -C cat -n all",
+    "make -C cat -n clean",
+    "make -C cat -n fclean",
+    "make -C cat -n re",
+    "mkdir -p cat/data",
+    "printf 'Hello, Epitech!\\nThis is cat speaking.\\n' > cat/data/hello.txt",
+    "printf 'no trailing newline' > cat/data/no_newline.txt",
+    ": > cat/data/empty.txt",
+    "printf 'apple\\nbanana\\ncherry\\n' > cat/data/fruits.txt",
+    "printf 'top secret\\n' > cat/data/secret.txt && chmod 000 cat/data/secret.txt",
+    "i=0; while [ $i -lt 4000 ]; do printf '0123456789abcdef\\n'; i=$((i+1)); done > cat/data/big.txt",
+]
+command = 'make -C cat fclean && make -C cat re && stat -c %y cat/cat > .ase_relink_ref && make -C cat all && test "$(stat -c %y cat/cat)" = "$(cat .ase_relink_ref)"'
+
+# --- cat sans arguments : lit stdin ---------------------------------
+
+[[functional_test]]
+name = "cat_stdin"
+stdin = "Bonjour depuis stdin\nseconde ligne\n"
+stdout = "Bonjour depuis stdin\nseconde ligne\n"
+exit_code = 0
+
+[[functional_test]]
+name = "cat_stdin_vide"
+stdin = ""
+stdout = ""
+exit_code = 0
+
+# --- fichiers --------------------------------------------------------
+
+[[functional_test]]
+name = "cat_un_fichier"
+args = ["cat/data/hello.txt"]
+stdout_file = "cpool_day12/expected/hello.out"
+exit_code = 0
+
+[[functional_test]]
+name = "cat_fichier_vide"
+args = ["cat/data/empty.txt"]
+stdout = ""
+exit_code = 0
+
+[[functional_test]]
+name = "cat_sans_newline_final"
+args = ["cat/data/no_newline.txt"]
+stdout = "no trailing newline"
+exit_code = 0
+
+[[functional_test]]
+name = "cat_plusieurs_fichiers"
+args = ["cat/data/hello.txt", "cat/data/no_newline.txt", "cat/data/fruits.txt"]
+stdout_file = "cpool_day12/expected/multiple.out"
+exit_code = 0
+
+[[functional_test]]
+name = "cat_gros_fichier"
+args = ["cat/data/big.txt"]
+stdout_file = "cpool_day12/expected/big.out"
+exit_code = 0
+
+# --- erreurs : message sur stderr, exit 84, cat continue ------------
+
+[[functional_test]]
+name = "cat_fichier_inexistant"
+args = ["cat/data/absent.txt"]
+stdout = ""
+stderr = "cat: cat/data/absent.txt: No such file or directory\n"
+exit_code = 84
+
+[[functional_test]]
+name = "cat_permission_refusee"
+args = ["cat/data/secret.txt"]
+stdout = ""
+stderr = "cat: cat/data/secret.txt: Permission denied\n"
+exit_code = 84
+
+[[functional_test]]
+name = "cat_repertoire"
+args = ["cat/data"]
+stdout = ""
+stderr = "cat: cat/data: Is a directory\n"
+exit_code = 84
+
+[[functional_test]]
+name = "cat_erreur_entre_deux_fichiers"
+args = ["cat/data/hello.txt", "cat/data/absent.txt", "cat/data/fruits.txt"]
+stdout_file = "cpool_day12/expected/hello_plus_fruits.out"
+stderr = "cat: cat/data/absent.txt: No such file or directory\n"
+exit_code = 84
