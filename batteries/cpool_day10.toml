@@ -1,0 +1,302 @@
+# Batterie cpool_day10 — C Pool Day10 « Makefile and do-ops ».
+#
+# 5 exercices : libmy + son Makefile (lib/my), do-op (do_op/),
+# my_sort_word_array, my_advanced_sort_word_array et
+# my_advanced_do-op (my_advanced_do_op/, pointeurs de fonctions).
+#
+# CHOIX DE TYPE — « binary » alors que le jour mêle lib, programmes
+# et fonctions : une batterie n'a qu'un type et le type functions
+# compile une delivery par task (impossible d'y tester les binaires
+# multi-cas ni les Makefiles). Ici le produit annoncé est la LIB
+# (binary = "lib/libmy.a", non exécutable → tests avec harness), et
+# les [[functional_test]] couvrent les 5 exercices :
+# - le harness cpool_day10/harness/runner.c est un passthrough execve
+#   : argv[1] = chemin du binaire construit par le rendu
+#   (do_op/do-op, my_advanced_do_op/my_advanced_do-op), dont stdout,
+#   stderr et exit code deviennent ceux du processus testé — chaque
+#   cas d'usage de do-op / my_advanced_do-op est un test à part
+#   entière, au caractère près ;
+# - my_sort_word_array / my_advanced_sort_word_array sont compilées
+#   via link_flags (le fichier de delivery passé au link, relatif à
+#   la salle blanche) avec un harness dédié qui affiche les tableaux
+#   triés (marqueurs « === » entre les cas).
+#
+# [build] — les Makefiles du sujet sont testées en pre_commands
+# (chaque dossier : clean, fclean, re ; la Task 01 vérifie en plus la
+# copie de libmy.a dans lib/ et de my.h dans include/ ; do_op vérifie
+# en plus « must not relink » via « make » puis « make -q do-op »,
+# exit 0 ssi rien à refaire). La commande de build finale ne fait que
+# re-vérifier la présence des trois produits — le vrai build est
+# l'affaire des pre_commands, comme la vraie moulinette qui part des
+# Makefiles de l'étudiant.
+#
+# allowed_functions VIDE, volontairement : le produit scanné par
+# l'étape Symboles serait lib/libmy.a, une archive non-ELF que le
+# moteur (object::File) ne sait pas lire — la whitelist du sujet
+# (« write, malloc, free ») resterait inapplicable. Étape désactivée
+# plutôt qu'un faux KO ; les binaires sont linkés contre la libmy du
+# rendu, donc ses fonctions sont exercées à chaque test.
+#
+# cflags SANS -Werror, comme cpool_day03/day08 : la compile est jugée
+# sur le C, la norme par l'étape Norme (sous epiclang, banana tourne
+# à la compile et ses diagnostics de style deviendraient des erreurs
+# avec -Werror).
+#
+# Formats EXACTS revérifiés contre le sujet et la solution de
+# référence :
+# - résultat sur stdout + '\n', exit 0 ;
+# - opérateur inconnu (do-op) : « 0 » sur stdout, exit 84 (le sujet :
+#   « display 0 and exit as an error ») ;
+# - argv[2] n'est lu que par son PREMIER caractère (do-op :
+#   « 1 +toto 1 » → 2) ; my_advanced_do-op matche par PRÉFIXE sur la
+#   chaîne de l'opérateur (même exemple → 2, et compatible avec les
+#   opérateurs multi-caractères annoncés par le sujet) ; l'entrée
+#   sentinelle « » de la table matche tout et déclenche my_usage ;
+# - division / modulo par zéro : rien sur stdout,
+#   « Stop: division by zero » / « Stop: modulo by zero » sur stderr
+#   (visibles malgré « > /dev/null » dans le sujet), exit 84 ;
+# - opérateur inconnu (my_advanced_do-op) : rien sur stdout,
+#   « error: only [ + - / * % ] are supported » sur stderr (listé
+#   depuis la table, ordre du sujet), exit 84 ;
+# - argc != 4 : silence total, exit 84.
+
+[project]
+name = "cpool_day10"
+type = "binary"
+binary = "lib/libmy.a"
+allowed_functions = []
+tests_run_rule = false
+cflags = ["-Wall", "-Wextra"]
+
+[build]
+pre_commands = [
+    "cd lib/my && make clean && make fclean && make re",
+    "test -f lib/libmy.a && test -f include/my.h",
+    "cd do_op && make clean >/dev/null && make fclean >/dev/null && make re >/dev/null",
+    "cd do_op && make >/dev/null && make -q do-op",
+    "cd my_advanced_do_op && make clean >/dev/null && make fclean >/dev/null && make re >/dev/null",
+]
+command = "test -x do_op/do-op && test -x my_advanced_do_op/my_advanced_do-op && test -f lib/libmy.a"
+
+# --- Task 03 : my_sort_word_array (tri ascii, échange de pointeurs) ---
+
+[[functional_test]]
+name = "my_sort_word_array"
+harness = "cpool_day10/harness/main_my_sort_word_array.c"
+link_flags = ["my_sort_word_array.c"]
+stdout_file = "cpool_day10/expected/my_sort_word_array.out"
+exit_code = 0
+
+# --- Task 04 : my_advanced_sort_word_array (cmp en paramètre) ---
+
+[[functional_test]]
+name = "my_advanced_sort_word_array"
+harness = "cpool_day10/harness/main_my_advanced_sort_word_array.c"
+link_flags = ["my_advanced_sort_word_array.c"]
+stdout_file = "cpool_day10/expected/my_advanced_sort_word_array.out"
+exit_code = 0
+
+# --- Task 02 : do-op (exemples du sujet + erreurs, via runner) ---
+
+[[functional_test]]
+name = "do_op_add"
+harness = "cpool_day10/harness/runner.c"
+args = ["do_op/do-op", "24", "+", "12"]
+stdout = "36\n"
+exit_code = 0
+
+[[functional_test]]
+name = "do_op_sub"
+harness = "cpool_day10/harness/runner.c"
+args = ["do_op/do-op", "42", "-", "64"]
+stdout = "-22\n"
+exit_code = 0
+
+[[functional_test]]
+name = "do_op_mul"
+harness = "cpool_day10/harness/runner.c"
+args = ["do_op/do-op", "6", "*", "7"]
+stdout = "42\n"
+exit_code = 0
+
+[[functional_test]]
+name = "do_op_div"
+harness = "cpool_day10/harness/runner.c"
+args = ["do_op/do-op", "84", "/", "2"]
+stdout = "42\n"
+exit_code = 0
+
+[[functional_test]]
+name = "do_op_mod"
+harness = "cpool_day10/harness/runner.c"
+args = ["do_op/do-op", "85", "%", "43"]
+stdout = "42\n"
+exit_code = 0
+
+[[functional_test]]
+name = "do_op_div_negative"
+harness = "cpool_day10/harness/runner.c"
+args = ["do_op/do-op", "-7", "/", "2"]
+stdout = "-3\n"
+exit_code = 0
+
+[[functional_test]]
+name = "do_op_mod_negative"
+harness = "cpool_day10/harness/runner.c"
+args = ["do_op/do-op", "-7", "%", "2"]
+stdout = "-1\n"
+exit_code = 0
+
+[[functional_test]]
+name = "do_op_div_zero"
+harness = "cpool_day10/harness/runner.c"
+args = ["do_op/do-op", "25", "/", "0"]
+stdout = ""
+stderr = "Stop: division by zero\n"
+exit_code = 84
+
+[[functional_test]]
+name = "do_op_mod_zero"
+harness = "cpool_day10/harness/runner.c"
+args = ["do_op/do-op", "25", "%", "0"]
+stdout = ""
+stderr = "Stop: modulo by zero\n"
+exit_code = 84
+
+[[functional_test]]
+name = "do_op_invalid_operator"
+harness = "cpool_day10/harness/runner.c"
+args = ["do_op/do-op", "1", "p", "1"]
+stdout = "0\n"
+exit_code = 84
+
+[[functional_test]]
+name = "do_op_operator_suffix_ignored"
+harness = "cpool_day10/harness/runner.c"
+args = ["do_op/do-op", "1", "+toto", "1"]
+stdout = "2\n"
+exit_code = 0
+
+[[functional_test]]
+name = "do_op_getnbr_garbage_mix"
+harness = "cpool_day10/harness/runner.c"
+args = ["do_op/do-op", "42friends", "-", "-----20toto12"]
+stdout = "62\n"
+exit_code = 0
+
+[[functional_test]]
+name = "do_op_getnbr_garbage_right"
+harness = "cpool_day10/harness/runner.c"
+args = ["do_op/do-op", "1", "+", "toto3"]
+stdout = "1\n"
+exit_code = 0
+
+[[functional_test]]
+name = "do_op_getnbr_garbage_left"
+harness = "cpool_day10/harness/runner.c"
+args = ["do_op/do-op", "toto3", "+", "4"]
+stdout = "4\n"
+exit_code = 0
+
+[[functional_test]]
+name = "do_op_words_operator"
+harness = "cpool_day10/harness/runner.c"
+args = ["do_op/do-op", "foo", "plus", "bar"]
+stdout = "0\n"
+exit_code = 84
+
+[[functional_test]]
+name = "do_op_no_args"
+harness = "cpool_day10/harness/runner.c"
+args = ["do_op/do-op"]
+stdout = ""
+exit_code = 84
+
+[[functional_test]]
+name = "do_op_two_args"
+harness = "cpool_day10/harness/runner.c"
+args = ["do_op/do-op", "1", "+"]
+stdout = ""
+exit_code = 84
+
+# --- Task 05 : my_advanced_do-op (table de pointeurs, my_opp.h) ---
+
+[[functional_test]]
+name = "advanced_add"
+harness = "cpool_day10/harness/runner.c"
+args = ["my_advanced_do_op/my_advanced_do-op", "1", "+", "1"]
+stdout = "2\n"
+exit_code = 0
+
+[[functional_test]]
+name = "advanced_sub"
+harness = "cpool_day10/harness/runner.c"
+args = ["my_advanced_do_op/my_advanced_do-op", "42", "-", "2"]
+stdout = "40\n"
+exit_code = 0
+
+[[functional_test]]
+name = "advanced_mul"
+harness = "cpool_day10/harness/runner.c"
+args = ["my_advanced_do_op/my_advanced_do-op", "6", "*", "7"]
+stdout = "42\n"
+exit_code = 0
+
+[[functional_test]]
+name = "advanced_div"
+harness = "cpool_day10/harness/runner.c"
+args = ["my_advanced_do_op/my_advanced_do-op", "84", "/", "2"]
+stdout = "42\n"
+exit_code = 0
+
+[[functional_test]]
+name = "advanced_mod"
+harness = "cpool_day10/harness/runner.c"
+args = ["my_advanced_do_op/my_advanced_do-op", "85", "%", "43"]
+stdout = "42\n"
+exit_code = 0
+
+[[functional_test]]
+name = "advanced_operator_suffix_ignored"
+harness = "cpool_day10/harness/runner.c"
+args = ["my_advanced_do_op/my_advanced_do-op", "1", "+toto", "1"]
+stdout = "2\n"
+exit_code = 0
+
+[[functional_test]]
+name = "advanced_getnbr_garbage_left"
+harness = "cpool_day10/harness/runner.c"
+args = ["my_advanced_do_op/my_advanced_do-op", "toto3", "+", "4"]
+stdout = "4\n"
+exit_code = 0
+
+[[functional_test]]
+name = "advanced_unknown_operator"
+harness = "cpool_day10/harness/runner.c"
+args = ["my_advanced_do_op/my_advanced_do-op", "1", "p", "1"]
+stdout = ""
+stderr = "error: only [ + - / * % ] are supported\n"
+exit_code = 84
+
+[[functional_test]]
+name = "advanced_div_zero"
+harness = "cpool_day10/harness/runner.c"
+args = ["my_advanced_do_op/my_advanced_do-op", "25", "/", "0"]
+stdout = ""
+stderr = "Stop: division by zero\n"
+exit_code = 84
+
+[[functional_test]]
+name = "advanced_mod_zero"
+harness = "cpool_day10/harness/runner.c"
+args = ["my_advanced_do_op/my_advanced_do-op", "25", "%", "0"]
+stdout = ""
+stderr = "Stop: modulo by zero\n"
+exit_code = 84
+
+[[functional_test]]
+name = "advanced_no_args"
+harness = "cpool_day10/harness/runner.c"
+args = ["my_advanced_do_op/my_advanced_do-op"]
+stdout = ""
+exit_code = 84
