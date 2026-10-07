@@ -257,6 +257,119 @@ fn functions_prototype_mismatch() {
     );
 }
 
+// ----------------------------------------------------------------
+// Delivery dossier (Rush1 : rush-1-1/*, Day12 : cat/*) — extension
+// ----------------------------------------------------------------
+
+/// Batterie Functions dont la delivery est un dossier, sans prototype.
+const DIR_TOML: &str = r#"
+[project]
+name = "rush1"
+type = "functions"
+
+[[task]]
+name = "ex01"
+delivery = "rush-1-1"
+harness = "harness/ex01_main.c"
+stdout = ""
+"#;
+
+/// La même avec un prototype attendu, défini dans UN des fichiers du
+/// dossier (la concaténation des *.c doit le porter).
+const DIR_PROTO_TOML: &str = r#"
+[project]
+name = "rush1"
+type = "functions"
+
+[[task]]
+name = "ex01"
+delivery = "rush-1-1"
+harness = "harness/ex01_main.c"
+prototype = "int my_compute(int x)"
+stdout = ""
+"#;
+
+/// Pose `files` (nom → contenu) dans `<target>/rush-1-1/`.
+fn pose_rush_dir(target: &Path, files: &[(&str, &str)]) {
+    let dir = target.join("rush-1-1");
+    fs::create_dir(&dir).unwrap();
+    for (nom, contenu) in files {
+        fs::write(dir.join(nom), contenu).unwrap();
+    }
+}
+
+#[test]
+fn functions_delivery_dossier_presente_prototype_dans_la_concatenation() {
+    let (_bat_dir, battery) = load_battery(DIR_PROTO_TOML);
+    let target = TempDir::new().unwrap();
+    // Le prototype n'est que dans le SECOND fichier (ordre alphabétique)
+    // : seule la concaténation des *.c du dossier peut le porter. Le
+    // fichier non-.c ne doit pas gêner.
+    pose_rush_dir(
+        target.path(),
+        &[
+            ("a_helper.c", "int helper(int x)\n{\n    return x;\n}\n"),
+            (
+                "b_compute.c",
+                "int\nmy_compute(int  x)\n{\n    return helper(x);\n}\n",
+            ),
+            ("notes.txt", "pas un source\n"),
+        ],
+    );
+
+    let (ok, events) = run_prelim(&battery, target.path());
+    let checks = extract_checks(&events);
+    assert!(ok, "dossier sain, étape KO : {checks:?}");
+    assert!(
+        checks
+            .iter()
+            .any(|(n, ok, d)| n == "delivery" && *ok && d.contains("rush-1-1")),
+        "check delivery OK du dossier absent : {checks:?}"
+    );
+    assert!(
+        checks.iter().any(|(n, ok, _)| n == "prototype" && *ok),
+        "prototype OK (concaténation) absent : {checks:?}"
+    );
+}
+
+#[test]
+fn functions_delivery_dossier_sans_c_ko_explicite() {
+    let (_bat_dir, battery) = load_battery(DIR_TOML);
+    let target = TempDir::new().unwrap();
+    pose_rush_dir(target.path(), &[("README.md", "rien\n")]);
+
+    let (ok, events) = run_prelim(&battery, target.path());
+    assert!(!ok, "un dossier sans .c doit être KO");
+    let checks = extract_checks(&events);
+    assert!(
+        checks.iter().any(|(n, ok, d)| n == "delivery"
+            && !*ok
+            && d.contains("rush-1-1")
+            && d.contains(".c")),
+        "KO clair « dossier sans .c » absent : {checks:?}"
+    );
+}
+
+#[test]
+fn functions_delivery_dossier_prototype_mismatch() {
+    let (_bat_dir, battery) = load_battery(DIR_PROTO_TOML);
+    let target = TempDir::new().unwrap();
+    pose_rush_dir(
+        target.path(),
+        &[("a.c", "int unrelated(void)\n{\n    return 0;\n}\n")],
+    );
+
+    let (ok, events) = run_prelim(&battery, target.path());
+    assert!(!ok);
+    let checks = extract_checks(&events);
+    assert!(
+        checks
+            .iter()
+            .any(|(_, ok, d)| !*ok && d.contains("prototype mismatch: ex01")),
+        "mismatch (dossier) non signalé : {checks:?}"
+    );
+}
+
 #[test]
 fn banana_check_repo_signale_chaque_ligne() {
     // Test conditionnel : si banana-check-repo n'est pas installé, on
@@ -527,5 +640,36 @@ fn logue_le_compilateur_choisi_en_premiere_etape() {
     assert!(
         lignes.contains(&"compilateur : cc"),
         "LogLine compilateur absente : {lignes:?}"
+    );
+}
+
+#[test]
+fn binary_build_command_sondes_makefile_skippees() {
+    // Avec [build].command, make n'est plus le mécanisme de build :
+    // les sondes de règles Makefile sont skippées — un Rush2 sans
+    // Makefile n'est pas KO en prelim.
+    let toml = r#"
+[project]
+name = "rush2"
+type = "binary"
+binary = "rush2"
+
+[build]
+command = "cc -o rush2 main.c"
+"#;
+    let (_bat_dir, battery) = load_battery(toml);
+    let target = TempDir::new().unwrap(); // pas de Makefile
+
+    let (ok, events) = run_prelim(&battery, target.path());
+    let checks = extract_checks(&events);
+    assert!(
+        ok,
+        "build.command sans Makefile : prelim OK attendu : {checks:?}"
+    );
+    assert!(
+        checks
+            .iter()
+            .all(|(n, _, _)| n != "makefile" && n != "makefile rules"),
+        "sondes Makefile attendues skippées : {checks:?}"
     );
 }

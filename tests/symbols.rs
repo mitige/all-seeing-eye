@@ -537,3 +537,64 @@ fn objet_corrompu_ko_explicite() {
         "KO artefact illisible absent : {checks:?}"
     );
 }
+
+/// Batterie Functions dont la delivery est un dossier (Rush1) —
+/// whitelist paramétrée.
+fn functions_toml_dossier(allowed: &str) -> String {
+    format!(
+        r#"[project]
+name = "sym_dir"
+type = "functions"
+allowed_functions = [{allowed}]
+
+[[task]]
+name = "ex01"
+delivery = "rush-1-1"
+harness = "harness/ex01_main.c"
+stdout = ""
+"#
+    )
+}
+
+#[test]
+fn functions_delivery_dossier_chaque_o_du_dossier_scanne() {
+    if !cc_present() {
+        eprintln!("cc absent du PATH : test skippé");
+        return;
+    }
+    let (_bat_dir, battery) = load_battery(&functions_toml_dossier("\"write\""));
+    // Contrat build.rs étendu : les sources vivent dans le dossier de
+    // delivery, leurs .o à la racine de la salle blanche, nommés
+    // d'après le stem de chaque fichier. printf est dans part_b.o.
+    let white = TempDir::new().unwrap();
+    fs::create_dir(white.path().join("rush-1-1")).unwrap();
+    fs::write(white.path().join("rush-1-1/part_a.c"), HELPER_C).unwrap();
+    fs::write(white.path().join("rush-1-1/part_b.c"), PRINTF_B_C).unwrap();
+    for (src, obj) in [("part_a", "part_a.o"), ("part_b", "part_b.o")] {
+        let status = Command::new("cc")
+            .args([
+                "-fno-builtin",
+                "-c",
+                &format!("rush-1-1/{src}.c"),
+                "-o",
+                obj,
+            ])
+            .current_dir(white.path())
+            .status()
+            .expect("lancement de cc impossible");
+        assert!(status.success(), "cc -c {src}.c a échoué");
+    }
+
+    let (ok, events, _ctx) = run_symbols(&battery, Some((white, None)));
+    assert!(
+        !ok,
+        "printf dans part_b.o (delivery dossier) doit être détecté"
+    );
+    let checks = extract_checks(&events);
+    assert!(
+        checks
+            .iter()
+            .any(|(_, ok, d)| !*ok && d == "forbidden function: printf"),
+        "KO « forbidden function: printf » absent : {checks:?}"
+    );
+}

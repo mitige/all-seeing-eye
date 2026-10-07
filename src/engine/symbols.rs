@@ -198,26 +198,34 @@ pub fn run(ctx: &mut PipelineContext, tx: &mpsc::Sender<Event>) -> bool {
 
 /// Artefacts à scanner selon le type de projet : le binaire linké
 /// (Binary), ou les `.o` des deliveries à la racine de la salle
-/// blanche (Functions — contrat build.rs). Un `.o` manquant (delivery
-/// non compilée) est ignoré : l'étape Build a déjà remonté le KO.
+/// blanche (Functions — contrat build.rs : un `.o` par SOURCE de
+/// delivery, y compris chaque *.c d'une delivery dossier). Un `.o`
+/// manquant (delivery non compilée) est ignoré : l'étape Build a déjà
+/// remonté le KO.
 fn artefacts_a_scanner(ctx: &PipelineContext) -> Vec<PathBuf> {
     let Some(build) = &ctx.build else {
         return Vec::new();
     };
     match ctx.battery.project.kind {
         ProjectType::Binary => build.binary.iter().cloned().collect(),
-        ProjectType::Functions => ctx
-            .battery
-            .task
-            .iter()
-            .map(|t| {
-                build
-                    .dir
-                    .path()
-                    .join(format!("{}.o", super::build::stem_of(&t.delivery)))
-            })
-            .filter(|p| p.is_file())
-            .collect(),
+        ProjectType::Functions => {
+            let mut out = Vec::new();
+            for t in &ctx.battery.task {
+                // Une delivery irrésoluble (dossier sans .c) a déjà
+                // été KO en prelim/build : rien à scanner pour elle.
+                let Ok(sources) = crate::battery::delivery_sources(build.dir.path(), &t.delivery)
+                else {
+                    continue;
+                };
+                out.extend(sources.iter().map(|s| {
+                    build
+                        .dir
+                        .path()
+                        .join(format!("{}.o", super::build::stem_of(&s.to_string_lossy())))
+                }));
+            }
+            out.into_iter().filter(|p| p.is_file()).collect()
+        }
     }
 }
 

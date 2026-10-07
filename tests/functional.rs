@@ -19,6 +19,7 @@ use all_seeing_eye::engine::{build, functional, BuildArtifacts, PipelineContext}
 use all_seeing_eye::exec::{ExecStatus, MAX_CAPTURE_BYTES};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
@@ -1215,4 +1216,408 @@ fn functions_sans_task_etape_desactivee() {
     let (ok_ev, skipped, _) = step_finished(&events);
     assert!(ok_ev && skipped, "désactivée : ok:true, skipped:true");
     assert!(ctx.tests.is_empty());
+}
+
+// ----------------------------------------------------------------
+// Extensions : args/stdin de task, include_dirs/link_flags,
+// delivery dossier (Rush1), harness + link_flags sur functional_test
+// (WorkshopLib)
+// ----------------------------------------------------------------
+
+/// Batterie Functions façon CountIsland : args et stdin transmis au
+/// harness compilé.
+const ARGS_TOML: &str = r#"
+[project]
+name = "fn_args"
+type = "functions"
+
+[[task]]
+name = "echo_args"
+delivery = "echo_args.c"
+harness = "harness/main.c"
+args = ["3", "map.txt"]
+stdin = "ligne lue\n"
+stdout = "argc=3 argv1=3 argv2=map.txt\nstdin=ligne lue\n"
+"#;
+
+/// Harness affichant argc/argv et la première ligne de stdin : la
+/// sortie ne matche l'attendu que si args ET stdin sont transmis.
+const ARGS_HARNESS: &str = r#"
+#include <stdio.h>
+#include <string.h>
+
+int main(int argc, char **argv)
+{
+    char buf[256];
+
+    if (argc < 3) {
+        printf("argc=%d\n", argc);
+        return 1;
+    }
+    printf("argc=%d argv1=%s argv2=%s\n", argc, argv[1], argv[2]);
+    if (fgets(buf, sizeof(buf), stdin) == NULL)
+        return 1;
+    buf[strcspn(buf, "\n")] = '\0';
+    printf("stdin=%s\n", buf);
+    return 0;
+}
+"#;
+
+/// Delivery quelconque, compilable avec -Wall -Wextra -Werror.
+const DUMMY_C: &str = "int dummy_unused(void)\n{\n    return 0;\n}\n";
+
+#[test]
+fn functions_args_et_stdin_relayes_au_harness() {
+    let (_bat_dir, battery) = battery_avec_fichiers(ARGS_TOML, &[("harness/main.c", ARGS_HARNESS)]);
+    let (ok, events, _ctx) = run_functions_step_delivery(&battery, "echo_args.c", DUMMY_C);
+
+    assert!(ok, "args/stdin transmis : l'étape passe : {events:?}");
+    let tests = finished_tests(&events);
+    assert_eq!(tests.len(), 1, "{tests:?}");
+    assert!(
+        matches!(tests[0].1, TestVerdict::Passed),
+        "echo_args attendu Passed (args et stdin relayés) : {tests:?}"
+    );
+}
+
+/// Batterie Functions façon CountIsland : -I et flags de link.
+const COUNT_TOML: &str = r#"
+[project]
+name = "count_island"
+type = "functions"
+
+[[task]]
+name = "count_island"
+delivery = "count_island.c"
+harness = "harness/main.c"
+include_dirs = ["include"]
+link_flags = ["-Llib", "-lmy"]
+stdout = "ile=1\n"
+"#;
+
+/// Delivery : inclut <isle.h> (requiert -Iinclude) et appelle
+/// isle_value (requiert -Llib -lmy).
+const COUNT_C: &str = r#"
+#include <isle.h>
+
+int count_island(void)
+{
+    return isle_value();
+}
+"#;
+
+/// Header posé dans `include/` (salle blanche).
+const ISLE_H: &str = "#ifndef ISLE_H\n#define ISLE_H\n\nint isle_value(void);\n\n#endif\n";
+
+/// Source de la lib statique `lib/libmy.a` (salle blanche).
+const ISLE_LIB_C: &str = "int isle_value(void)\n{\n    return 1;\n}\n";
+
+/// Harness de count_island : affiche la valeur retournée.
+const COUNT_HARNESS: &str = r#"
+#include <stdio.h>
+
+int count_island(void);
+
+int main(void)
+{
+    printf("ile=%d\n", count_island());
+    return 0;
+}
+"#;
+
+/// Compile `src` en `<lib_dir>/<name>.a` (cc -c + ar), dans `lib_dir`.
+fn build_static_lib(lib_dir: &Path, name: &str, src: &str) {
+    fs::write(lib_dir.join(format!("{name}.c")), src).unwrap();
+    let cc = Command::new("cc")
+        .args(["-c", &format!("{name}.c"), "-o", &format!("{name}.o")])
+        .current_dir(lib_dir)
+        .status()
+        .expect("lancement de cc impossible");
+    assert!(cc.success(), "cc -c {name}.c a échoué");
+    let ar = Command::new("ar")
+        .args(["rcs", &format!("{name}.a"), &format!("{name}.o")])
+        .current_dir(lib_dir)
+        .status()
+        .expect("lancement de ar impossible");
+    assert!(ar.success(), "ar rcs {name}.a a échoué");
+}
+
+#[test]
+fn functions_include_dirs_et_link_flags_resolus_en_salle_blanche() {
+    let (_bat_dir, battery) =
+        battery_avec_fichiers(COUNT_TOML, &[("harness/main.c", COUNT_HARNESS)]);
+    // Salle blanche façon rendu CountIsland : delivery à la racine,
+    // header dans include/, lib statique dans lib/.
+    let white = TempDir::new().unwrap();
+    fs::write(white.path().join("count_island.c"), COUNT_C).unwrap();
+    fs::create_dir(white.path().join("include")).unwrap();
+    fs::write(white.path().join("include/isle.h"), ISLE_H).unwrap();
+    fs::create_dir(white.path().join("lib")).unwrap();
+    // « -lmy » cherche libmy.a : l'archive doit porter le préfixe lib.
+    build_static_lib(&white.path().join("lib"), "libmy", ISLE_LIB_C);
+    let target = TempDir::new().unwrap();
+    let mut ctx = common::test_ctx(&battery, target.path());
+    ctx.build = Some(BuildArtifacts {
+        dir: white,
+        binary: None,
+    });
+    let (tx, rx) = mpsc::channel();
+    let ok = functional::run(&mut ctx, &tx);
+    drop(tx);
+    let events: Vec<Event> = rx.iter().collect();
+
+    assert!(
+        ok,
+        "sans -Iinclude la delivery ne compile pas, sans -Llib -lmy le \
+         link échoue : l'étape ne passe que si les deux sont transmis : {events:?}"
+    );
+    let tests = finished_tests(&events);
+    assert!(
+        matches!(tests[0].1, TestVerdict::Passed),
+        "count_island attendu Passed : {tests:?}"
+    );
+}
+
+/// Batterie Functions façon Rush1 : la delivery est un dossier.
+const RUSH_FUNC_TOML: &str = r#"
+[project]
+name = "rush1"
+type = "functions"
+
+[[task]]
+name = "rush"
+delivery = "rush-1-1"
+harness = "harness/main.c"
+stdout = "3\n"
+"#;
+
+/// Harness rush : additionne les deux moitiés du dossier.
+const RUSH_HARNESS: &str = r#"
+#include <stdio.h>
+
+int part_a(void);
+int part_b(void);
+
+int main(void)
+{
+    printf("%d\n", part_a() + part_b());
+    return 0;
+}
+"#;
+
+#[test]
+fn functions_delivery_dossier_tous_les_c_compiles_lies_executes() {
+    let (_bat_dir, battery) =
+        battery_avec_fichiers(RUSH_FUNC_TOML, &[("harness/main.c", RUSH_HARNESS)]);
+    // Salle blanche : la delivery est le dossier rush-1-1/ — le test
+    // ne passe que si les DEUX sources sont compilées et liées (un
+    // seul .c → symbole indéfini au link).
+    let white = TempDir::new().unwrap();
+    fs::create_dir(white.path().join("rush-1-1")).unwrap();
+    fs::write(
+        white.path().join("rush-1-1/part_a.c"),
+        "int part_a(void)\n{\n    return 1;\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        white.path().join("rush-1-1/part_b.c"),
+        "int part_b(void)\n{\n    return 2;\n}\n",
+    )
+    .unwrap();
+    let target = TempDir::new().unwrap();
+    let mut ctx = common::test_ctx(&battery, target.path());
+    ctx.build = Some(BuildArtifacts {
+        dir: white,
+        binary: None,
+    });
+    let (tx, rx) = mpsc::channel();
+    let ok = functional::run(&mut ctx, &tx);
+    drop(tx);
+    let events: Vec<Event> = rx.iter().collect();
+
+    assert!(ok, "delivery dossier saine : l'étape passe : {events:?}");
+    let tests = finished_tests(&events);
+    assert!(
+        matches!(tests[0].1, TestVerdict::Passed),
+        "rush attendu Passed : {tests:?}"
+    );
+    // Le binaire de test porte le stem du dossier de delivery.
+    let white = ctx
+        .build
+        .as_ref()
+        .expect("ctx.build posé")
+        .dir
+        .path()
+        .to_path_buf();
+    assert!(
+        white.join("rush-1-1_test").is_file(),
+        "rush-1-1_test absent de la salle blanche"
+    );
+}
+
+// ----------------------------------------------------------------
+// Harness de functional_test (WorkshopLib : le produit est une .a)
+// ----------------------------------------------------------------
+
+/// Makefile produisant lib/libmy.a depuis my_strlen.c.
+const LIB_MAKEFILE: &str = "CFLAGS = -Wall -Wextra -Werror\n\
+\n\
+all: lib/libmy.a\n\
+\n\
+lib/libmy.a: my_strlen.o\n\
+\tmkdir -p lib\n\
+\tar rcs lib/libmy.a my_strlen.o\n\
+\n\
+my_strlen.o: my_strlen.c\n\
+\tcc $(CFLAGS) -c my_strlen.c -o my_strlen.o\n\
+\n\
+clean:\n\
+\trm -f my_strlen.o\n\
+\n\
+fclean: clean\n\
+\trm -f lib/libmy.a\n\
+\n\
+re: fclean all\n";
+
+/// Source de la lib : un my_strlen minimal.
+const LIB_MY_STRLEN_C: &str = r#"
+int my_strlen(char const *s)
+{
+    int n = 0;
+
+    while (s[n] != '\0')
+        n++;
+    return n;
+}
+"#;
+
+/// Harness du test : affiche my_strlen("abcde").
+const LIB_HARNESS_C: &str = r#"
+#include <stdio.h>
+
+int my_strlen(char const *s);
+
+int main(void)
+{
+    printf("%d\n", my_strlen("abcde"));
+    return 0;
+}
+"#;
+
+/// Batterie WorkshopLib : le binaire produit est lib/libmy.a, le test
+/// est un harness compilé et linké avec elle.
+const LIB_TOML: &str = r#"
+[project]
+name = "workshop_lib"
+type = "binary"
+binary = "lib/libmy.a"
+
+[[functional_test]]
+name = "my_strlen"
+harness = "harness/my_strlen.c"
+link_flags = ["-Llib", "-lmy"]
+stdout = "5\n"
+"#;
+
+/// La même sans harness : la .a n'est pas exécutable, KO clair attendu.
+const LIB_SANS_HARNESS_TOML: &str = r#"
+[project]
+name = "workshop_lib"
+type = "binary"
+binary = "lib/libmy.a"
+
+[[functional_test]]
+name = "direct"
+stdout = ""
+"#;
+
+/// Rendu WorkshopLib : Makefile + my_strlen.c.
+fn pose_rendu_lib(target: &Path) {
+    fs::write(target.join("Makefile"), LIB_MAKEFILE).unwrap();
+    fs::write(target.join("my_strlen.c"), LIB_MY_STRLEN_C).unwrap();
+}
+
+#[test]
+fn binary_harness_compile_lie_a_la_lib_puis_execute() {
+    let (_bat_dir, battery) =
+        battery_avec_fichiers(LIB_TOML, &[("harness/my_strlen.c", LIB_HARNESS_C)]);
+    let target = TempDir::new().unwrap();
+    pose_rendu_lib(target.path());
+
+    let (ok, events, ctx) = run_binary_step(&battery, target.path());
+    assert!(ok, "harness linké à la lib : l'étape passe : {events:?}");
+    let tests = finished_tests(&events);
+    assert_eq!(tests.len(), 1, "{tests:?}");
+    assert!(
+        matches!(tests[0].1, TestVerdict::Passed),
+        "my_strlen attendu Passed via harness_test : {tests:?}"
+    );
+    // C'est le binaire harness_test_<n>, pas la .a, qui a été exécuté.
+    let white = ctx
+        .build
+        .as_ref()
+        .expect("ctx.build posé")
+        .dir
+        .path()
+        .to_path_buf();
+    assert!(
+        white.join("harness_test_0").is_file(),
+        "harness_test_0 absent de la salle blanche"
+    );
+    assert!(
+        white.join("lib/libmy.a").is_file(),
+        "libmy.a non produite par le build"
+    );
+}
+
+#[test]
+fn binary_non_executable_sans_harness_ko_clair() {
+    let (_bat_dir, battery) = load_battery(LIB_SANS_HARNESS_TOML);
+    let target = TempDir::new().unwrap();
+    pose_rendu_lib(target.path());
+
+    let (ok, events, _ctx) = run_binary_step(&battery, target.path());
+    assert!(!ok, "une .a sans harness ne peut pas être exécutée");
+    let tests = finished_tests(&events);
+    assert_eq!(tests.len(), 1, "{tests:?}");
+    match &tests[0].1 {
+        TestVerdict::Failed { diff, .. } => {
+            assert!(
+                diff.contains("binaire non exécutable sans harness"),
+                "KO clair absent du diff : {diff:?}"
+            );
+        }
+        other => panic!("direct attendu Failed : {other:?}"),
+    }
+}
+
+#[test]
+fn binary_harness_compile_ko_failed_extrait_compile() {
+    // Harness syntaxiquement cassé : la compile est le verdict du
+    // test, avec l'extrait du compilateur — jamais d'exécution.
+    let (_bat_dir, battery) = battery_avec_fichiers(
+        LIB_TOML,
+        &[("harness/my_strlen.c", "int main(void) {\n    oops = ;\n}\n")],
+    );
+    let target = TempDir::new().unwrap();
+    pose_rendu_lib(target.path());
+
+    let (ok, events, _ctx) = run_binary_step(&battery, target.path());
+    assert!(!ok, "harness cassé : l'étape échoue");
+    let tests = finished_tests(&events);
+    assert_eq!(tests.len(), 1, "{tests:?}");
+    match &tests[0].1 {
+        TestVerdict::Failed {
+            diff,
+            expected,
+            got,
+        } => {
+            assert!(expected.is_empty() && got.is_empty());
+            assert!(
+                diff.contains("error"),
+                "extrait compile absent du diff : {diff:?}"
+            );
+        }
+        other => panic!("harness cassé attendu Failed : {other:?}"),
+    }
 }

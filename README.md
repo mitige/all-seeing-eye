@@ -89,20 +89,24 @@ contenant `..` est rejeté.
 | champ | type | défaut | rôle |
 |---|---|---|---|
 | `name` | string | requis | nom du test dans le rapport |
-| `delivery` | string | requis | fichier rendu, relatif au repo |
+| `delivery` | string | requis | fichier rendu, relatif au repo — ou **dossier** : tous ses `*.c` directs (triés, non récursif) sont livrés (Rush1 : `rush-1-1`, Day12 : `cat`) ; le prototype est vérifié dans leur concaténation |
 | `prototype` | string | — | signature attendue, vérifiée en prelim (blancs normalisés) |
 | `harness` | path | requis | `main` fourni par la batterie, relatif au TOML |
 | `extra_sources` | path[] | `[]` | sources officiels liés au test (ex. `my_putchar.c`) |
+| `args` | string[] | `[]` | arguments (argv[1..]) du harness compilé |
+| `stdin` | string | `""` | écrit sur stdin du harness compilé |
+| `include_dirs` | string[] | `[]` | deviennent `-I<dir>` à la compile, résolus en salle blanche |
+| `link_flags` | string[] | `[]` | passés au link du harness (ex. `-Llib/my -lmy`), résolus en salle blanche |
 | `stdout` / `stdout_file` | string / path | — | stdout attendu, inline ou fichier (mutuellement exclusifs) |
 | `stderr` | string | `""` | stderr attendu |
 | `exit_code` | int | `0` | exit code attendu (0..=255) |
 | `timeout_ms` | int | `2000` | timeout de l'exécution |
 
 Chaque task est compilée
-`<cc> <cflags…> <delivery> <harness> <extra…> -o <stem>_test` dans la
-salle blanche, puis exécutée sans args ni stdin ; la sortie est
-comparée au caractère près (stdout, puis stderr, puis exit code) — un
-écart produit un diff unified `-attendu` / `+obtenu`.
+`<cc> <cflags…> <sources de la delivery> <harness> <extra…> <-I…> <link_flags…> -o <stem>_test`
+dans la salle blanche, puis exécutée avec ses `args` et son `stdin` ;
+la sortie est comparée au caractère près (stdout, puis stderr, puis
+exit code) — un écart produit un diff unified `-attendu` / `+obtenu`.
 
 ### `[[functional_test]]` (type binary) — un test end-to-end
 
@@ -111,10 +115,28 @@ comparée au caractère près (stdout, puis stderr, puis exit code) — un
 | `name` | string | requis | nom du test dans le rapport |
 | `args` | string[] | `[]` | arguments (argv[1..]) |
 | `stdin` | string | `""` | écrit sur stdin du binaire |
+| `harness` | path | — | source C compilé et linké avec le binaire produit, relatif au TOML (WorkshopLib : le produit est une `lib/libmy.a`) — `<cc> <cflags…> <harness> <link_flags…> <produit> -o harness_test_<n>`, et c'est CE binaire qui est exécuté |
+| `link_flags` | string[] | `[]` | flags de link du harness, résolus en salle blanche |
 | `stdout` / `stdout_file` | string / path | — | stdout attendu, inline ou fichier (mutuellement exclusifs) |
 | `stderr` | string | `""` | stderr attendu |
 | `exit_code` | int | `0` | exit code attendu (0..=255) |
 | `timeout_ms` | int | `2000` | timeout de l'exécution |
+
+Sans `harness`, le binaire produit doit être directement exécutable :
+un produit non exécutable (ex. une lib statique) testé sans harness
+est un KO clair (« binaire non exécutable sans harness »).
+
+### `[build]` (optionnel, top-level) — build sur mesure
+
+| champ | type | défaut | rôle |
+|---|---|---|---|
+| `pre_commands` | string[] | `[]` | commandes shell (`/bin/sh -c`) jouées en salle blanche AVANT le build, binary ou functions (ex. `cd lib/my && ./build.sh`) ; le premier échec fait échouer l'étape (`pre_command failed: <cmd>`) |
+| `command` | string | — | si présent : cette commande shell REMPLACE `make fclean` + `make re` (binary, ex. Rush2) ; échec → `build failed: <command>` |
+
+Avec `command` : la présence du binaire annoncé reste vérifiée après
+la commande ; les sondes de règles Makefile du prelim sont skippées
+(make n'est plus le mécanisme de build) ; le check des cflags n'est
+appliqué que si un Makefile existe.
 
 ### `[[prototype]]`
 

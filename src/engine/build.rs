@@ -25,9 +25,11 @@
 //! my_putchar.c) n'est pas compilé ici — il serait sinon analysé comme
 //! un rendu et déclencherait à tort le check des fonctions interdites.
 //! Contrat pour Task 7 (tests unitaires) : les `.o` produits sont un
-//! par delivery, à la RACINE de la salle blanche, nommés `<stem>.o`
-//! (stem = nom de fichier de la delivery sans extension) — d'où la
-//! garde d'unicité des stems dans `build_functions`.
+//! par SOURCE de delivery, à la RACINE de la salle blanche, nommés
+//! `<stem>.o` (stem = nom du fichier sans extension) — une delivery
+//! DOSSIER (Rush1 : `rush-1-1/*`) produit donc un `.o` par `*.c`
+//! direct. D'où la garde d'unicité des stems dans `build_functions`,
+//! étendue à toutes les sources résolues.
 //!
 //! Les sorties des sous-processus sont relayées ligne à ligne en
 //! [`Event::LogLine`] pour le front.
@@ -93,10 +95,15 @@ pub fn run(ctx: &mut PipelineContext, tx: &mpsc::Sender<Event>) -> bool {
         .path()
         .to_path_buf();
     let mut c = Collect::new(tx, Step::Build);
-    let ok = match ctx.battery.project.kind {
-        ProjectType::Binary => build_binary(ctx, &white, &mut c),
-        ProjectType::Functions => build_functions(ctx, &white, &mut c),
-    };
+    // [build].pre_commands d'abord, quel que soit le type de projet
+    // (binary ET functions) : elles préparent la salle blanche (ex.
+    // construire une lib). Un échec arrête l'étape — construire par-
+    // dessus une préparation ratée ne produirait que du bruit.
+    let ok = run_pre_commands(&ctx.battery, &white, &mut c)
+        && match ctx.battery.project.kind {
+            ProjectType::Binary => build_binary(ctx, &white, &mut c),
+            ProjectType::Functions => build_functions(ctx, &white, &mut c),
+        };
     // Les KO non bloquants (ex. cflag manquant) restent visibles dans
     // le résumé — jamais masqués par un verdict global OK.
     let (total, failed, checks) = c.finish();
@@ -192,6 +199,72 @@ fn copy_dir_capped(src: &Path, dst: &Path, max_depth: usize, max_bytes: u64) -> 
     Ok(())
 }
 
+/// Timeout d'une commande shell de `[build]` (pre_command ou commande
+/// de build) : shell arbitraire, même borne qu'un make.
+const SHELL_CMD_TIMEOUT: Duration = MAKE_TIMEOUT;
+
+/// Lance les `[build].pre_commands` dans la salle blanche, AVANT tout
+/// build. Le premier échec est un KO « pre_command failed: <cmd> » qui
+/// fait échouer l'étape — les commandes suivantes et le build ne sont
+/// pas tentés. Sans `[build]` : rien à faire, succès à vide.
+fn run_pre_commands(battery: &crate::battery::Battery, dir: &Path, c: &mut Collect) -> bool {
+    let Some(spec) = &battery.build else {
+        return true;
+    };
+    for cmd in &spec.pre_commands {
+        if !run_shell(dir, cmd, "pre_command", c) {
+            return false;
+        }
+    }
+    true
+}
+
+/// Exécute une ligne shell via `env LC_ALL=C /bin/sh -c <cmd>` dans
+/// `dir` (bornée à [`SHELL_CMD_TIMEOUT`]), relaie stdout/stderr ligne
+/// à ligne en LogLine et émet le check `name` : OK « <name> ok:
+/// <cmd> », KO « <name> failed: <cmd> » (avec extrait stderr si
+/// présent). Tout statut non nul, signal, timeout ou lancement
+/// impossible est un KO.
+fn run_shell(dir: &Path, cmd: &str, name: &str, c: &mut Collect) -> bool {
+    let args = vec![
+        "LC_ALL=C".to_string(),
+        "/bin/sh".to_string(),
+        "-c".to_string(),
+        cmd.to_string(),
+    ];
+    let outcome = match run_capture(
+        Path::new("/usr/bin/env"),
+        &args,
+        "",
+        dir,
+        SHELL_CMD_TIMEOUT,
+        Limits::default(),
+    ) {
+        Ok(o) => o,
+        Err(e) => {
+            return c.check(
+                name,
+                false,
+                format!("{name} failed: {cmd} (lancement impossible : {e:#})"),
+            );
+        }
+    };
+    c.log(&outcome.stdout);
+    c.log(&outcome.stderr);
+    match outcome.status {
+        ExecStatus::Exit(0) => c.check(name, true, format!("{name} ok: {cmd}")),
+        status => {
+            let stderr_tail = tail(&outcome.stderr, STDERR_TAIL);
+            let detail = if stderr_tail.is_empty() {
+                format!("{name} failed: {cmd} ({})", describe_status(status))
+            } else {
+                format!("{name} failed: {cmd}\n{stderr_tail}")
+            };
+            c.check(name, false, detail)
+        }
+    }
+}
+
 /// Statut d'exécution en clair, pour le détail d'un KO.
 /// Partagé avec unit.rs (Task 8 : KO de `make tests_run`).
 pub(crate) fn describe_status(status: ExecStatus) -> String {
@@ -274,14 +347,35 @@ fn check_cflags(ctx: &PipelineContext, dir: &Path, c: &mut Collect) {
 
 /// Build Binary : cflags (non bloquant), `make fclean`, `make re`,
 /// puis présence du binaire annoncé par la batterie — répertorié dans
-/// `ctx.build.binary`.
+/// `ctx.build.binary`. Avec `[build].command` (Rush2) : la commande
+/// shell REMPLACE make fclean/re — les checks de règles Makefile sont
+/// skippés (voir prelim.rs), le check des cflags n'est appliqué que
+/// si un Makefile existe, et la présence du binaire produit reste
+/// vérifiée à l'identique.
 fn build_binary(ctx: &mut PipelineContext, dir: &Path, c: &mut Collect) -> bool {
-    // Les flags d'abord : un flag manquant pénalise sans bloquer, et
-    // le diagnostic « missing Makefile » précède le bruit de make.
-    check_cflags(ctx, dir, c);
-    for rule in ["fclean", "re"] {
-        if !run_make(dir, rule, c) {
-            return false;
+    let commande = ctx.battery.build.as_ref().and_then(|b| b.command.clone());
+    match commande {
+        Some(cmd) => {
+            // Build sur mesure : sans Makefile, rien à sonder ; avec
+            // un Makefile, les cflags pénalisent sans bloquer (comme
+            // sur le chemin make).
+            if dir.join("Makefile").is_file() {
+                check_cflags(ctx, dir, c);
+            }
+            if !run_shell(dir, &cmd, "build", c) {
+                return false;
+            }
+        }
+        None => {
+            // Les flags d'abord : un flag manquant pénalise sans
+            // bloquer, et le diagnostic « missing Makefile » précède
+            // le bruit de make.
+            check_cflags(ctx, dir, c);
+            for rule in ["fclean", "re"] {
+                if !run_make(dir, rule, c) {
+                    return false;
+                }
+            }
         }
     }
     let Some(name) = &ctx.battery.project.binary else {
@@ -407,38 +501,56 @@ fn compile_one(
 }
 
 /// Build Functions : compile chaque delivery de la batterie en `.o`
-/// dans la salle blanche. Un seul échec fait échouer l'étape (« the
-/// Autograder will not be able to correct your work »), mais toutes
-/// les deliveries sont compilées pour tout remonter d'un coup.
+/// dans la salle blanche — une delivery DOSSIER (Rush1 : `rush-1-1`)
+/// livre tous ses *.c directs, chacun compilé en son `.o`. Un seul
+/// échec fait échouer l'étape (« the Autograder will not be able to
+/// correct your work »), mais toutes les deliveries sont compilées
+/// pour tout remonter d'un coup.
 fn build_functions(ctx: &PipelineContext, dir: &Path, c: &mut Collect) -> bool {
     let compiler = select_compiler(&ctx.opts);
-    // Garde d'unicité des stems : deux deliveries de même stem
-    // (« a/foo.c » et « b/foo.c ») produiraient le même `.o` à la
-    // racine de la salle blanche — le second écraserait silencieusement
-    // le premier. KO explicite avant toute compilation.
-    let mut vus: HashMap<&str, &str> = HashMap::new();
-    for task in &ctx.battery.task {
-        let stem = stem_of(&task.delivery);
-        if let Some(autre) = vus.insert(stem, task.delivery.as_str()) {
-            return c.check(
-                "compile",
-                false,
-                format!(
-                    "collision de .o : « {autre} » et « {} » produisent tous les deux {stem}.o",
-                    task.delivery
-                ),
-            );
-        }
-    }
+    // Résolution des deliveries AVANT la garde des stems : un dossier
+    // livre plusieurs sources, chacune produit son .o. Une delivery
+    // irrésoluble (dossier sans .c) est un KO « compile » — prelim
+    // l'a déjà signalé, la compilation est impossible — sans empêcher
+    // les autres deliveries d'être compilées.
+    let mut sources: Vec<Vec<String>> = Vec::new();
     let mut ok = true;
     for task in &ctx.battery.task {
-        ok &= compile_one(
-            &compiler,
-            &ctx.battery.project.cflags,
-            &task.delivery,
-            dir,
-            c,
-        );
+        match crate::battery::delivery_sources(dir, &task.delivery) {
+            Ok(srcs) => sources.push(
+                srcs.iter()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .collect(),
+            ),
+            Err(e) => {
+                ok &= c.check("compile", false, format!("{e:#}"));
+            }
+        }
+    }
+    // Garde d'unicité des stems (étendue aux sources des dossiers) :
+    // deux sources de même stem (« a/foo.c » et « b/foo.c »)
+    // produiraient le même `.o` à la racine de la salle blanche — le
+    // second écraserait silencieusement le premier. KO explicite avant
+    // toute compilation.
+    let mut vus: HashMap<&str, &str> = HashMap::new();
+    for srcs in &sources {
+        for s in srcs {
+            let stem = stem_of(s);
+            if let Some(autre) = vus.insert(stem, s.as_str()) {
+                return c.check(
+                    "compile",
+                    false,
+                    format!(
+                        "collision de .o : « {autre} » et « {s} » produisent tous les deux {stem}.o"
+                    ),
+                );
+            }
+        }
+    }
+    for srcs in &sources {
+        for s in srcs {
+            ok &= compile_one(&compiler, &ctx.battery.project.cflags, s, dir, c);
+        }
     }
     ok
 }

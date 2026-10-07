@@ -644,6 +644,180 @@ fn discover_tier3_embarquee_par_nom_de_dossier() {
     assert!(b2.expected_stdout_of_task(&b2.task[0]).is_ok());
 }
 
+// ── Extensions : dossiers, args/stdin, [build], harness + link_flags ──
+
+#[test]
+fn task_accepte_args_stdin_include_dirs_et_link_flags() {
+    // Façon CountIsland : le harness compilé est exécuté avec des args
+    // et un stdin, et la compile reçoit des -I et des flags de link.
+    let toml = r#"
+[project]
+name = "count_island"
+type = "functions"
+
+[[task]]
+name = "count_island"
+delivery = "count_island.c"
+harness = "harness/main.c"
+args = ["3", "map.txt"]
+stdin = "ligne\n"
+include_dirs = ["include", "lib/my"]
+link_flags = ["-Llib/my", "-lmy"]
+stdout = ""
+"#;
+    let dir = TempDir::new().unwrap();
+    let path = write_battery(&dir, toml);
+
+    let b = Battery::load(&path).unwrap();
+    let t = &b.task[0];
+    assert_eq!(t.args, vec!["3".to_string(), "map.txt".to_string()]);
+    assert_eq!(t.stdin, "ligne\n");
+    assert_eq!(
+        t.include_dirs,
+        vec!["include".to_string(), "lib/my".to_string()]
+    );
+    assert_eq!(
+        t.link_flags,
+        vec!["-Llib/my".to_string(), "-lmy".to_string()]
+    );
+}
+
+#[test]
+fn task_et_batterie_nouveaux_champs_defauts_vides() {
+    // Aucun des nouveaux champs dans le TOML : defaults appliqués.
+    let dir = TempDir::new().unwrap();
+    let path = write_battery(&dir, &toml_functions(""));
+
+    let b = Battery::load(&path).unwrap();
+    let t = &b.task[0];
+    assert!(t.args.is_empty(), "args par défaut : {:?}", t.args);
+    assert_eq!(t.stdin, "");
+    assert!(t.include_dirs.is_empty());
+    assert!(t.link_flags.is_empty());
+    assert!(b.build.is_none(), "pas de [build] par défaut");
+}
+
+#[test]
+fn functional_test_accepte_harness_et_link_flags() {
+    // Façon WorkshopLib : le binaire produit est une .a, le test est
+    // un harness compilé et linké avec elle.
+    let toml = r#"
+[project]
+name = "workshop_lib"
+type = "binary"
+binary = "lib/libmy.a"
+
+[[functional_test]]
+name = "my_strlen"
+harness = "harness/my_strlen.c"
+link_flags = ["-Llib/my", "-lmy"]
+stdout = "5\n"
+"#;
+    let dir = TempDir::new().unwrap();
+    let path = write_battery(&dir, toml);
+
+    let b = Battery::load(&path).unwrap();
+    let t = &b.functional_test[0];
+    assert_eq!(t.harness, Some(PathBuf::from("harness/my_strlen.c")));
+    assert_eq!(
+        t.link_flags,
+        vec!["-Llib/my".to_string(), "-lmy".to_string()]
+    );
+}
+
+#[test]
+fn functional_test_harness_et_link_flags_par_defaut() {
+    let dir = TempDir::new().unwrap();
+    let path = write_battery(&dir, &toml_functional_test(""));
+
+    let b = Battery::load(&path).unwrap();
+    let t = &b.functional_test[0];
+    assert_eq!(t.harness, None);
+    assert!(t.link_flags.is_empty());
+}
+
+#[test]
+fn build_spec_parse_pre_commands_et_command() {
+    // Façon Rush2 : la lib est construite par un script, puis le
+    // binaire par une commande qui remplace make fclean/re.
+    let toml = r#"
+[project]
+name = "rush2"
+type = "binary"
+binary = "rush2"
+
+[build]
+pre_commands = ["cd lib/my && ./build.sh"]
+command = "clang -o rush2 *.c -I./include -L./lib/my -lmy"
+"#;
+    let dir = TempDir::new().unwrap();
+    let path = write_battery(&dir, toml);
+
+    let b = Battery::load(&path).unwrap();
+    let spec = b.build.as_ref().expect("[build] doit être parsé");
+    assert_eq!(
+        spec.pre_commands,
+        vec!["cd lib/my && ./build.sh".to_string()]
+    );
+    assert_eq!(
+        spec.command.as_deref(),
+        Some("clang -o rush2 *.c -I./include -L./lib/my -lmy")
+    );
+}
+
+#[test]
+fn build_spec_table_vide_defauts() {
+    let toml = "[project]\nname = \"x\"\ntype = \"binary\"\nbinary = \"x\"\n\n[build]\n";
+    let dir = TempDir::new().unwrap();
+    let path = write_battery(&dir, toml);
+
+    let b = Battery::load(&path).unwrap();
+    let spec = b.build.as_ref().expect("[build] vide doit être parsé");
+    assert!(spec.pre_commands.is_empty());
+    assert!(spec.command.is_none());
+}
+
+#[test]
+fn build_spec_champ_inconnu_erreur() {
+    // deny_unknown_fields sur [build] : une coquille est signalée.
+    let toml = "[project]\nname = \"x\"\ntype = \"binary\"\nbinary = \"x\"\n\n\
+                [build]\ncomand = \"make\"\n";
+    let err = load_err(toml);
+    assert!(
+        err.contains("comand"),
+        "la coquille doit être signalée, message : {err}"
+    );
+}
+
+#[test]
+fn validate_rejette_harness_hostile_sur_functional_test() {
+    // Le harness d'un functional_test est relu depuis battery.root :
+    // mêmes garde-fous de chemin que le harness d'une task.
+    for hostile in ["../h.c", "/abs/h.c"] {
+        let toml = toml_functional_test(&format!("harness = \"{hostile}\"\n"));
+        let err = load_err(&toml);
+        assert!(
+            err.contains("harness") && err.contains(hostile),
+            "harness hostile « {hostile} » (functional_test) non rejeté proprement : {err}"
+        );
+    }
+}
+
+#[test]
+fn validate_rejette_include_dirs_hostiles() {
+    // Les include_dirs d'une task deviennent des -I résolus en salle
+    // blanche : un chemin sortant du rendu est rejeté comme les
+    // autres champs de chemin.
+    for hostile in ["../include", "/abs/include"] {
+        let toml = toml_functions(&format!("include_dirs = [\"{hostile}\"]\n"));
+        let err = load_err(&toml);
+        assert!(
+            err.contains("include_dirs") && err.contains(hostile),
+            "include_dirs hostile « {hostile} » non rejeté proprement : {err}"
+        );
+    }
+}
+
 #[test]
 fn discover_tier2_batterie_invalide_mentionnee() {
     let _lock = XDG_MUTEX.lock().unwrap_or_else(|p| p.into_inner());

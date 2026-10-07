@@ -12,15 +12,22 @@
 //!
 //! - Projet Binary : le binaire compilé par le build
 //!   (`ctx.build.binary`) est lancé pour chaque
-//!   `battery.functional_test`, avec ses args et son stdin.
-//! - Projet Functions : pour chaque `battery.task`, la delivery est
-//!   d'abord compilée et liée avec le harness et les extra_sources de
-//!   la batterie (`<compiler> <cflags…> <delivery> <harness> <extra…>
-//!   -o <salle blanche>/<stem>_test` — même sélection de compilateur
-//!   que build.rs) ; une compile KO est le verdict du test — `Failed`
-//!   dont le diff porte l'extrait stderr du compilateur — sans
-//!   exécution. Sinon le binaire de test est exécuté sans args ni
-//!   stdin.
+//!   `battery.functional_test`, avec ses args et son stdin. Si le test
+//!   porte un `harness` (WorkshopLib : le produit est une lib), le
+//!   harness est compilé et linké avec le produit
+//!   (`<compiler> <cflags…> <harness> <link_flags…> <produit> -o
+//!   <salle blanche>/harness_test_<n>`) et C'EST lui qui est exécuté ;
+//!   sinon un produit non exécutable est un KO clair.
+//! - Projet Functions : pour chaque `battery.task`, la delivery —
+//!   fichier unique, ou tous les *.c directs d'un dossier (Rush1) —
+//!   est d'abord compilée et liée avec le harness et les
+//!   extra_sources de la batterie, plus les `-I` de `include_dirs` et
+//!   les `link_flags` (`<compiler> <cflags…> <sources…> <harness>
+//!   <extra…> <-I…> <link_flags…> -o <salle blanche>/<stem>_test` —
+//!   même sélection de compilateur que build.rs) ; une compile KO est
+//!   le verdict du test — `Failed` dont le diff porte l'extrait
+//!   stderr du compilateur — sans exécution. Sinon le binaire de test
+//!   est exécuté avec les `args` et le `stdin` de la task.
 //!
 //! Chaque test émet `TestStarted` AVANT l'exécution (le front voit un
 //! test qui pend), puis `TestFinished`, et alimente `ctx.tests` pour
@@ -45,12 +52,13 @@
 
 use super::events::{Event, Step, TestVerdict};
 use super::{tail, Collect, PipelineContext, STDERR_TAIL};
-use crate::battery::model::{ProjectType, Task};
+use crate::battery::model::{FunctionalTest, ProjectType, Task};
 use crate::battery::Battery;
 use crate::exec::{run_capture, ExecOutcome, ExecStatus, Limits, MAX_CAPTURE_BYTES};
 use similar::{ChangeTag, TextDiff};
 use std::borrow::Cow;
 use std::fmt::Write as _;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::Duration;
@@ -139,7 +147,7 @@ pub fn run(ctx: &mut PipelineContext, tx: &mpsc::Sender<Event>) -> bool {
 
     let (total, failed) = match battery.project.kind {
         ProjectType::Binary => match binary {
-            Some(binary) => run_binary(&battery, &binary, &white, ctx, tx),
+            Some(binary) => run_binary(&battery, &compiler, &binary, &white, ctx, tx, &mut c),
             None => {
                 c.check(
                     "binary",
@@ -470,17 +478,23 @@ fn emit_test(
 }
 
 /// Binary : exécute le binaire du build pour chaque
-/// `battery.functional_test`, dans la salle blanche. Renvoie
-/// `(total, en échec)`.
+/// `battery.functional_test`, dans la salle blanche. Si le test porte
+/// un `harness` (WorkshopLib : le produit est une `lib/libmy.a`), le
+/// harness est d'abord compilé et linké avec le binaire produit et
+/// C'EST ce binaire de test qui est exécuté ; sinon le binaire
+/// produit doit être directement exécutable — une lib sans harness
+/// est un KO clair. Renvoie `(total, en échec)`.
 fn run_binary(
     battery: &Battery,
+    compiler: &Path,
     binary: &Path,
     white: &Path,
     ctx: &mut PipelineContext,
     tx: &mpsc::Sender<Event>,
+    c: &mut Collect,
 ) -> (usize, usize) {
     let mut failed = 0;
-    for t in &battery.functional_test {
+    for (n, t) in battery.functional_test.iter().enumerate() {
         super::send(
             tx,
             Event::TestStarted {
@@ -489,19 +503,22 @@ fn run_binary(
             },
         );
         let verdict = match battery.expected_stdout_of_test(t) {
-            Ok(expected) => {
-                run_one(
-                    binary,
-                    &t.args,
-                    &t.stdin,
-                    white,
-                    &expected,
-                    &t.stderr,
-                    t.exit_code,
-                    Duration::from_millis(t.timeout_ms),
-                )
-                .0
-            }
+            Ok(expected) => match binaire_de_test(battery, compiler, t, n, binary, white, c) {
+                Ok(cmd) => {
+                    run_one(
+                        &cmd,
+                        &t.args,
+                        &t.stdin,
+                        white,
+                        &expected,
+                        &t.stderr,
+                        t.exit_code,
+                        Duration::from_millis(t.timeout_ms),
+                    )
+                    .0
+                }
+                Err(diff) => failed_sans_sortie(diff),
+            },
             // stdout attendu illisible (stdout_file) ou absent de la
             // batterie : erreur de batterie, rapportée comme un KO.
             Err(e) => failed_sans_sortie(format!("{e:#}")),
@@ -512,11 +529,110 @@ fn run_binary(
     (battery.functional_test.len(), failed)
 }
 
-/// Functions : pour chaque `battery.task`, compile delivery, harness
-/// et extra_sources en `<stem>_test` dans la salle blanche, puis
-/// exécute le binaire sans args ni stdin. Une compile KO est le
-/// verdict du test (diff = extrait compile), jamais d'exécution.
-/// Renvoie `(total, en échec)`.
+/// `true` si `path` est un fichier exécutable (au moins un bit x) :
+/// une lib statique (`lib/libmy.a`, 0644) ne l'est pas, un binaire
+/// produit par make l'est.
+fn est_executable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    fs::metadata(path)
+        .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
+/// Le binaire À EXÉCUTER pour un functional_test : le binaire produit
+/// lui-même, ou — si le test porte un `harness` — le harness compilé
+/// et linké avec le produit ([`compile_harness`]). Sans harness, un
+/// produit non exécutable (ex. lib/libmy.a) est un KO clair.
+fn binaire_de_test(
+    battery: &Battery,
+    compiler: &Path,
+    t: &FunctionalTest,
+    n: usize,
+    binary: &Path,
+    white: &Path,
+    c: &mut Collect,
+) -> Result<PathBuf, String> {
+    if t.harness.is_some() {
+        return compile_harness(compiler, battery, t, n, binary, white, c);
+    }
+    if !est_executable(binary) {
+        return Err(format!(
+            "binaire non exécutable sans harness : {}",
+            binary.display()
+        ));
+    }
+    Ok(binary.to_path_buf())
+}
+
+/// Compile le harness d'un functional_test et le lie au binaire
+/// produit : `<compiler> <cflags…> <harness (résolu depuis
+/// battery.root)> <link_flags…> <binaire> -o <salle
+/// blanche>/harness_test_<n>` via `env LC_ALL=C`, borné à
+/// [`COMPILE_TIMEOUT`]. Les link_flags sont résolus relativement à la
+/// salle blanche (le cwd) ; le chemin du binaire produit vient APRÈS
+/// les sources (ordre de link). Renvoie le chemin du binaire de test,
+/// ou le diff KO (extrait stderr borné, comme [`compile_task`]).
+/// `t.harness` doit être `Some` (garanti par [`binaire_de_test`]).
+fn compile_harness(
+    compiler: &Path,
+    battery: &Battery,
+    t: &FunctionalTest,
+    n: usize,
+    binary: &Path,
+    white: &Path,
+    c: &mut Collect,
+) -> Result<PathBuf, String> {
+    let harness = t.harness.as_ref().expect("harness Some : garanti");
+    let out = white.join(format!("harness_test_{n}"));
+    let mut args = vec![
+        "LC_ALL=C".to_string(),
+        compiler.to_string_lossy().into_owned(),
+    ];
+    args.extend(battery.project.cflags.iter().cloned());
+    args.push(battery.root.join(harness).to_string_lossy().into_owned());
+    args.extend(t.link_flags.iter().cloned());
+    args.push(binary.to_string_lossy().into_owned());
+    args.push("-o".to_string());
+    args.push(out.to_string_lossy().into_owned());
+    let outcome = run_capture(
+        Path::new("/usr/bin/env"),
+        &args,
+        "",
+        white,
+        COMPILE_TIMEOUT,
+        Limits::default(),
+    )
+    .map_err(|e| format!("lancement du compilateur impossible : {e:#}"))?;
+    c.log(&outcome.stdout);
+    c.log(&outcome.stderr);
+    match outcome.status {
+        ExecStatus::Exit(0) if out.is_file() => Ok(out),
+        ExecStatus::Exit(0) => Err(format!(
+            "compile failed: {} (binaire {} absent après une compilation réussie)",
+            t.name,
+            out.display()
+        )),
+        status => {
+            let stderr_tail = tail(&outcome.stderr, STDERR_TAIL);
+            if stderr_tail.is_empty() {
+                Err(format!(
+                    "compile failed: {} ({})",
+                    t.name,
+                    super::build::describe_status(status)
+                ))
+            } else {
+                Err(format!("compile failed: {}\n{stderr_tail}", t.name))
+            }
+        }
+    }
+}
+
+/// Functions : pour chaque `battery.task`, compile delivery (fichier
+/// ou tous les *.c d'un dossier), harness et extra_sources en
+/// `<stem>_test` dans la salle blanche, puis exécute le binaire avec
+/// les `args` et le `stdin` de la task. Une compile KO est le verdict
+/// du test (diff = extrait compile), jamais d'exécution. Renvoie
+/// `(total, en échec)`.
 fn run_functions(
     battery: &Battery,
     compiler: &Path,
@@ -539,8 +655,8 @@ fn run_functions(
                 Ok(expected) => {
                     run_one(
                         &test_bin,
-                        &[],
-                        "",
+                        &task.args,
+                        &task.stdin,
                         white,
                         &expected,
                         &task.stderr,
@@ -560,12 +676,15 @@ fn run_functions(
 }
 
 /// Compile et lie le binaire de test d'une task Functions :
-/// `<compiler> <cflags…> <delivery> <harness> <extra…> -o
-/// <salle blanche>/<stem>_test` via `env LC_ALL=C`, borné à
-/// [`COMPILE_TIMEOUT`]. La delivery est relative à la salle blanche
-/// (le cwd) ; harness et extra_sources viennent de `battery.root`.
-/// Renvoie le chemin du binaire produit, ou le diff KO (extrait
-/// stderr borné, comme les KO de compile de build.rs).
+/// `<compiler> <cflags…> <sources de la delivery> <harness> <extra…>
+/// <-I include_dirs…> <link_flags…> -o <salle blanche>/<stem>_test`
+/// via `env LC_ALL=C`, borné à [`COMPILE_TIMEOUT`]. Les sources de la
+/// delivery (le fichier, ou tous les *.c directs du dossier — Rush1)
+/// sont relatives à la salle blanche (le cwd), comme les
+/// `include_dirs` (-I) et les `link_flags` ; harness et extra_sources
+/// viennent de `battery.root`. Renvoie le chemin du binaire produit,
+/// ou le diff KO (extrait stderr borné, comme les KO de compile de
+/// build.rs).
 fn compile_task(
     compiler: &Path,
     battery: &Battery,
@@ -574,12 +693,18 @@ fn compile_task(
     c: &mut Collect,
 ) -> Result<PathBuf, String> {
     let out = white.join(format!("{}_test", super::build::stem_of(&task.delivery)));
+    // Delivery dossier : tous les *.c directs ; fichier : tel quel.
+    // Un dossier sans .c est un KO clair (prelim l'a déjà signalé).
+    let sources =
+        crate::battery::delivery_sources(white, &task.delivery).map_err(|e| format!("{e:#}"))?;
     let mut args = vec![
         "LC_ALL=C".to_string(),
         compiler.to_string_lossy().into_owned(),
     ];
     args.extend(battery.project.cflags.iter().cloned());
-    args.push(task.delivery.clone());
+    for s in &sources {
+        args.push(s.to_string_lossy().into_owned());
+    }
     args.push(
         battery
             .root
@@ -590,6 +715,10 @@ fn compile_task(
     for s in &task.extra_sources {
         args.push(battery.root.join(s).to_string_lossy().into_owned());
     }
+    for d in &task.include_dirs {
+        args.push(format!("-I{d}"));
+    }
+    args.extend(task.link_flags.iter().cloned());
     args.push("-o".to_string());
     args.push(out.to_string_lossy().into_owned());
     let outcome = run_capture(

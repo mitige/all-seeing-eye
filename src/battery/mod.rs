@@ -4,7 +4,7 @@ pub mod model;
 
 use anyhow::{bail, ensure, Context, Result};
 use include_dir::{include_dir, Dir};
-use model::{FunctionalTest, ProjectMeta, ProjectType, Prototype, Task};
+use model::{BuildSpec, FunctionalTest, ProjectMeta, ProjectType, Prototype, Task};
 use serde::Deserialize;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -23,6 +23,9 @@ pub struct Battery {
     pub task: Vec<Task>,
     #[serde(default)]
     pub functional_test: Vec<FunctionalTest>,
+    /// Table `[build]` optionnelle (top-level) : pre_commands et/ou
+    /// commande de build sur mesure remplaçant make.
+    pub build: Option<BuildSpec>,
     #[serde(skip)]
     pub root: PathBuf,
     /// Garde le TempDir d'extraction vivant pour une batterie
@@ -176,6 +179,9 @@ impl Battery {
             for s in &t.extra_sources {
                 ensure_chemin_rendu("extra_sources", s)?;
             }
+            for d in &t.include_dirs {
+                ensure_chemin_rendu("include_dirs", Path::new(d))?;
+            }
             ensure!(
                 !(t.stdout.is_some() && t.stdout_file.is_some()),
                 "task « {} » : `stdout` et `stdout_file` sont mutuellement exclusifs",
@@ -202,6 +208,9 @@ impl Battery {
             if let Some(f) = &t.stdout_file {
                 ensure_chemin_rendu("stdout_file", f)?;
             }
+            if let Some(h) = &t.harness {
+                ensure_chemin_rendu("harness", h)?;
+            }
             ensure!(
                 (0..=255).contains(&t.exit_code),
                 "functional_test « {} » : `exit_code` hors 0..=255 ({})",
@@ -216,6 +225,35 @@ impl Battery {
         }
         Ok(())
     }
+}
+
+/// Résout les sources C d'une delivery de task : la delivery elle-même
+/// si ce n'est pas un dossier (cas classique d'un fichier unique), ou
+/// — si `delivery` désigne un DOSSIER de `base` (Rush1 : `rush-1-1`,
+/// Day12 : `cat`) — tous les `*.c` directement dedans, triés par nom,
+/// non récursif. Les chemins renvoyés sont relatifs à `base`. Erreur
+/// claire si le dossier ne contient aucun `.c`.
+pub fn delivery_sources(base: &Path, delivery: &str) -> Result<Vec<PathBuf>> {
+    let dir = base.join(delivery);
+    if !dir.is_dir() {
+        return Ok(vec![PathBuf::from(delivery)]);
+    }
+    let mut sources: Vec<PathBuf> = Vec::new();
+    for entry in
+        fs::read_dir(&dir).with_context(|| format!("lecture de {} impossible", dir.display()))?
+    {
+        let entry = entry.with_context(|| format!("entrée illisible sous {}", dir.display()))?;
+        let path = entry.path();
+        if path.is_file() && path.extension().and_then(|e| e.to_str()) == Some("c") {
+            sources.push(Path::new(delivery).join(entry.file_name()));
+        }
+    }
+    sources.sort();
+    ensure!(
+        !sources.is_empty(),
+        "delivery « {delivery} » : dossier sans aucun fichier .c"
+    );
+    Ok(sources)
 }
 
 /// Rejette un chemin de champ de batterie qui sortirait du rendu :

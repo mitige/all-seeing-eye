@@ -15,7 +15,7 @@
 
 use super::events::{Event, Step};
 use super::{tail, Collect, PipelineContext, STDERR_TAIL};
-use crate::battery::model::ProjectType;
+use crate::battery::model::{ProjectType, Task};
 use crate::exec::{run_capture, ExecStatus, Limits};
 use regex::Regex;
 use std::fs;
@@ -58,6 +58,19 @@ pub fn run(ctx: &mut PipelineContext, tx: &mpsc::Sender<Event>) -> bool {
         ok &= banana_ok;
     }
     ok &= match ctx.battery.project.kind {
+        // Avec une commande de build custom ([build].command), make
+        // n'est plus le mécanisme de build : les sondes de règles
+        // Makefile sont skippées (un Rush2 sans Makefile n'est pas
+        // KO ici — la commande custom décide, en build).
+        ProjectType::Binary
+            if ctx
+                .battery
+                .build
+                .as_ref()
+                .is_some_and(|b| b.command.is_some()) =>
+        {
+            true
+        }
         ProjectType::Binary => check_makefile(ctx, &mut c),
         ProjectType::Functions => check_functions(ctx, &mut c),
     };
@@ -355,11 +368,17 @@ fn normalize_ws(s: &str) -> String {
 /// Checks Functions : chaque `task.delivery` doit exister à la racine
 /// du repo et être lisible ; si la task annonce un prototype, la
 /// signature normalisée doit apparaître dans le contenu normalisé du
-/// fichier.
+/// fichier. Une delivery DOSSIER (Rush1 : `rush-1-1`) existe si le
+/// dossier contient au moins un *.c direct ; le prototype est alors
+/// cherché dans la concaténation des sources du dossier.
 fn check_functions(ctx: &PipelineContext, c: &mut Collect) -> bool {
     let mut ok = true;
     for task in &ctx.battery.task {
         let path = ctx.target.join(&task.delivery);
+        if path.is_dir() {
+            ok &= check_delivery_dossier(ctx, task, c);
+            continue;
+        }
         if !path.is_file() {
             ok &= c.check(
                 "delivery",
@@ -404,6 +423,56 @@ fn check_functions(ctx: &PipelineContext, c: &mut Collect) -> bool {
                 );
             }
         }
+    }
+    ok
+}
+
+/// Check d'une delivery DOSSIER (Rush1 : `rush-1-1/*`) : le dossier
+/// doit contenir au moins un *.c direct (sinon KO clair), chaque
+/// source doit être lisible, et le prototype éventuel est cherché
+/// dans la CONCATÉNATION des sources (blancs normalisés, comme pour
+/// un fichier).
+fn check_delivery_dossier(ctx: &PipelineContext, task: &Task, c: &mut Collect) -> bool {
+    let sources = match crate::battery::delivery_sources(&ctx.target, &task.delivery) {
+        Ok(sources) => sources,
+        // Dossier sans .c (ou illisible) : KO clair, pas de suite.
+        Err(e) => return c.check("delivery", false, format!("{e:#}")),
+    };
+    let mut ok = c.check(
+        "delivery",
+        true,
+        format!("{} present ({} fichiers .c)", task.delivery, sources.len()),
+    );
+    let mut contenu = String::new();
+    for s in &sources {
+        match fs::read_to_string(ctx.target.join(s)) {
+            Ok(src) => {
+                contenu.push_str(&src);
+                contenu.push('\n');
+            }
+            // Source illisible → check KO, jamais de panic.
+            Err(e) => {
+                ok &= c.check(
+                    "delivery",
+                    false,
+                    format!("{} unreadable: {e}", s.display()),
+                );
+                return ok;
+            }
+        }
+    }
+    let Some(sig) = &task.prototype else {
+        return ok;
+    };
+    let sig = normalize_ws(sig);
+    if !sig.is_empty() && normalize_ws(&contenu).contains(&sig) {
+        ok &= c.check("prototype", true, format!("{}: prototype ok", task.name));
+    } else {
+        ok &= c.check(
+            "prototype",
+            false,
+            format!("prototype mismatch: {}", task.name),
+        );
     }
     ok
 }

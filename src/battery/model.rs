@@ -52,16 +52,42 @@ pub struct Prototype {
     pub file: String,
 }
 
+/// Table `[build]` optionnelle d'une batterie (Rush2, CountIsland) :
+/// préparation du rendu et build sur mesure en remplacement du make
+/// standard. Table top-level, PAS dans `[project]`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BuildSpec {
+    /// Commandes shell (`/bin/sh -c`) jouées dans la salle blanche
+    /// AVANT le build, binary ou functions (ex. construire une lib :
+    /// `cd lib/my && ./build.sh`).
+    #[serde(default)]
+    pub pre_commands: Vec<String>,
+    /// Si présent : commande shell REMPLAÇANT `make fclean` + `make
+    /// re` (binary). La présence du binaire annoncé reste vérifiée.
+    pub command: Option<String>,
+}
+
 /// Type Functions : 1 exercice piscine.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Task {
     pub name: String,
-    pub delivery: String, // ex. "my_print_alpha.c"
+    /// Fichier rendu (ex. "my_print_alpha.c"), ou DOSSIER dont tous
+    /// les *.c directs sont livrés (Rush1 : "rush-1-1", Day12 : "cat").
+    pub delivery: String,
     pub prototype: Option<String>,
     pub harness: PathBuf, // main fourni par la batterie
     #[serde(default)]
     pub extra_sources: Vec<PathBuf>, // ex. my_putchar.c officiel
+    #[serde(default)]
+    pub args: Vec<String>, // argv[1..] du harness compilé
+    #[serde(default)]
+    pub stdin: String, // écrit sur stdin du harness compilé
+    #[serde(default)]
+    pub include_dirs: Vec<String>, // deviennent -I<dir>, résolus en salle blanche
+    #[serde(default)]
+    pub link_flags: Vec<String>, // passés au link du harness
     pub stdout: Option<String>,
     pub stdout_file: Option<PathBuf>,
     #[serde(default)]
@@ -81,6 +107,12 @@ pub struct FunctionalTest {
     pub args: Vec<String>,
     #[serde(default)]
     pub stdin: String,
+    /// Source C compilé et linké avec le binaire produit (WorkshopLib :
+    /// le produit est une `lib/libmy.a`, le test est ce main), relatif
+    /// au TOML. Si absent, le binaire produit est exécuté directement.
+    pub harness: Option<PathBuf>,
+    #[serde(default)]
+    pub link_flags: Vec<String>, // link du harness, résolus en salle blanche
     pub stdout: Option<String>,
     pub stdout_file: Option<PathBuf>,
     #[serde(default)]

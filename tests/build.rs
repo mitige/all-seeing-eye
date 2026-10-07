@@ -602,3 +602,326 @@ fn binary_bad_makefile_build_ko() {
         "check make KO absent : {checks:?}"
     );
 }
+
+// ----------------------------------------------------------------
+// Extensions : delivery dossier (Rush1 : rush-1-1/*), [build]
+// pre_commands et command (Rush2)
+// ----------------------------------------------------------------
+
+/// Batterie Functions dont la delivery est un dossier.
+const RUSH_TOML: &str = r#"
+[project]
+name = "rush1"
+type = "functions"
+
+[[task]]
+name = "ex01"
+delivery = "rush-1-1"
+harness = "harness/ex01_main.c"
+stdout = ""
+"#;
+
+#[test]
+fn functions_delivery_dossier_compile_chaque_c_en_o_tries() {
+    let (_bat_dir, battery) = load_battery(RUSH_TOML);
+    let target = TempDir::new().unwrap();
+    let dir = target.path().join("rush-1-1");
+    fs::create_dir(&dir).unwrap();
+    // Écrits dans le désordre : la compilation doit être triée par nom.
+    fs::write(
+        dir.join("b_part.c"),
+        "int b_part(void)\n{\n    return 2;\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("a_part.c"),
+        "int a_part(void)\n{\n    return 1;\n}\n",
+    )
+    .unwrap();
+    fs::write(dir.join("notes.txt"), "pas un source\n").unwrap();
+
+    let (ok, events, ctx) = run_build(&battery, target.path());
+    assert!(ok, "delivery dossier saine : build OK : {events:?}");
+    let white = ctx
+        .build
+        .as_ref()
+        .expect("ctx.build posé")
+        .dir
+        .path()
+        .to_path_buf();
+    // Contrat : un .o par source du dossier, à la racine, nommé d'après
+    // le stem du fichier.
+    for obj in ["a_part.o", "b_part.o"] {
+        assert!(
+            white.join(obj).is_file(),
+            "{obj} absent de la salle blanche : {:?}",
+            root_entries(&white)
+        );
+    }
+    // Un check compile OK par source, dans l'ordre trié.
+    let checks = extract_checks(&events);
+    let compiles: Vec<&str> = checks
+        .iter()
+        .filter(|(n, ok, _)| n == "compile" && *ok)
+        .map(|(_, _, d)| d.as_str())
+        .collect();
+    assert_eq!(
+        compiles,
+        vec!["rush-1-1/a_part.c ok", "rush-1-1/b_part.c ok"],
+        "sources du dossier compilées triées : {compiles:?}"
+    );
+    // La cible n'est pas salie.
+    assert_eq!(
+        root_entries(&dir),
+        vec!["a_part.c", "b_part.c", "notes.txt"],
+        "dossier de delivery sali"
+    );
+}
+
+#[test]
+fn functions_delivery_dossier_sans_c_ko_explicite() {
+    let (_bat_dir, battery) = load_battery(RUSH_TOML);
+    let target = TempDir::new().unwrap();
+    let dir = target.path().join("rush-1-1");
+    fs::create_dir(&dir).unwrap();
+    fs::write(dir.join("README.md"), "rien\n").unwrap();
+
+    let (ok, events, _ctx) = run_build(&battery, target.path());
+    assert!(!ok, "un dossier sans .c ne compile pas");
+    let checks = extract_checks(&events);
+    assert!(
+        checks
+            .iter()
+            .any(|(n, ok, d)| n == "compile" && !*ok && d.contains("rush-1-1") && d.contains(".c")),
+        "KO clair « dossier sans .c » absent : {checks:?}"
+    );
+}
+
+/// Batterie Functions : une delivery dossier et une delivery fichier
+/// dont un stem est en collision (rush-1-1/foo.c et foo.c).
+const COLLISION_DIR_TOML: &str = r#"
+[project]
+name = "collision_dir"
+type = "functions"
+
+[[task]]
+name = "ex01"
+delivery = "rush-1-1"
+harness = "harness/ex01_main.c"
+stdout = ""
+
+[[task]]
+name = "ex02"
+delivery = "foo.c"
+harness = "harness/ex02_main.c"
+stdout = ""
+"#;
+
+#[test]
+fn functions_delivery_dossier_collision_de_stem_ko() {
+    let (_bat_dir, battery) = load_battery(COLLISION_DIR_TOML);
+    let target = TempDir::new().unwrap();
+    fs::create_dir(target.path().join("rush-1-1")).unwrap();
+    fs::write(
+        target.path().join("rush-1-1/foo.c"),
+        "int foo_a(void)\n{\n    return 1;\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        target.path().join("foo.c"),
+        "int foo_b(void)\n{\n    return 2;\n}\n",
+    )
+    .unwrap();
+
+    let (ok, events, _ctx) = run_build(&battery, target.path());
+    assert!(!ok, "stems en collision via un dossier : KO attendu");
+    let checks = extract_checks(&events);
+    assert!(
+        checks.iter().any(|(n, ok, d)| n == "compile"
+            && !*ok
+            && d.contains("collision")
+            && d.contains("rush-1-1/foo.c")
+            && d.contains("foo.c")),
+        "KO 'collision de .o' (dossier) absent ou muet : {checks:?}"
+    );
+}
+
+/// Batterie Rush2-like : la lib est construite par une pre_command,
+/// puis le binaire par une commande custom qui REMPLACE make.
+const RUSH2_TOML: &str = r#"
+[project]
+name = "rush2"
+type = "binary"
+binary = "rush2"
+
+[build]
+pre_commands = ["cc -c lib.c -o lib.o && ar rcs libmini.a lib.o"]
+command = "cc -o rush2 main.c -L. -lmini"
+"#;
+
+/// main.c appelant lib_fn (définie dans lib.c).
+const RUSH2_MAIN: &str =
+    "int lib_fn(void);\n\nint main(void)\n{\n    return lib_fn() == 42 ? 0 : 1;\n}\n";
+
+/// lib.c définissant lib_fn.
+const RUSH2_LIB: &str = "int lib_fn(void)\n{\n    return 42;\n}\n";
+
+#[test]
+fn binary_build_command_et_pre_commands_remplacent_make() {
+    let (_bat_dir, battery) = load_battery(RUSH2_TOML);
+    let target = TempDir::new().unwrap();
+    // Pas de Makefile : make fclean/re échouerait, la commande custom
+    // doit être le seul mécanisme de build.
+    fs::write(target.path().join("main.c"), RUSH2_MAIN).unwrap();
+    fs::write(target.path().join("lib.c"), RUSH2_LIB).unwrap();
+
+    let (ok, events, ctx) = run_build(&battery, target.path());
+    assert!(ok, "build custom KO : {events:?}");
+    // Le binaire produit par la commande est répertorié, en salle
+    // blanche.
+    let build = ctx.build.as_ref().expect("ctx.build posé");
+    let binary = build.binary.as_ref().expect("binaire répertorié");
+    assert!(binary.is_file(), "rush2 absent : {}", binary.display());
+    assert!(binary.starts_with(build.dir.path()));
+    let checks = extract_checks(&events);
+    assert!(
+        checks.iter().any(|(n, ok, d)| n == "pre_command"
+            && *ok
+            && d.contains("pre_command ok: cc -c lib.c")),
+        "check pre_command OK absent : {checks:?}"
+    );
+    assert!(
+        checks
+            .iter()
+            .any(|(n, ok, d)| n == "build" && *ok && d.contains("build ok: cc -o rush2 main.c")),
+        "check build OK absent : {checks:?}"
+    );
+    // Ni make ni cflags sans Makefile.
+    assert!(
+        checks
+            .iter()
+            .all(|(n, _, _)| n != "make" && n != "cflags" && n != "makefile"),
+        "check make/cflags inattendu sans Makefile : {checks:?}"
+    );
+    // La cible n'est pas salie (ni .o, ni .a, ni binaire).
+    assert_eq!(
+        root_entries(target.path()),
+        vec!["lib.c", "main.c"],
+        "cible salie par le build custom"
+    );
+}
+
+#[test]
+fn binary_build_command_en_echec_ko_build_failed() {
+    let toml = r#"
+[project]
+name = "rush2"
+type = "binary"
+binary = "rush2"
+
+[build]
+command = "cc -o rush2 main.c"
+"#;
+    let (_bat_dir, battery) = load_battery(toml);
+    let target = TempDir::new().unwrap();
+    fs::write(
+        target.path().join("main.c"),
+        "int main(void) {\n    oops = ;\n}\n",
+    )
+    .unwrap();
+
+    let (ok, events, ctx) = run_build(&battery, target.path());
+    assert!(!ok, "commande de build en échec : KO attendu");
+    let checks = extract_checks(&events);
+    assert!(
+        checks.iter().any(|(n, ok, d)| n == "build"
+            && !*ok
+            && d.contains("build failed: cc -o rush2 main.c")
+            && d.contains("error")),
+        "KO 'build failed: <command>' avec extrait absent : {checks:?}"
+    );
+    assert!(ctx.build.as_ref().and_then(|b| b.binary.as_ref()).is_none());
+}
+
+#[test]
+fn pre_command_en_echec_ko_et_build_jamais_tente() {
+    let toml = r#"
+[project]
+name = "rush2"
+type = "binary"
+binary = "rush2"
+
+[build]
+pre_commands = ["false"]
+command = "touch rush2"
+"#;
+    let (_bat_dir, battery) = load_battery(toml);
+    let target = TempDir::new().unwrap();
+    fs::write(target.path().join("main.c"), RUSH2_MAIN).unwrap();
+
+    let (ok, events, ctx) = run_build(&battery, target.path());
+    assert!(!ok, "pre_command KO doit faire échouer l'étape");
+    let checks = extract_checks(&events);
+    assert!(
+        checks.iter().any(|(n, ok, d)| n == "pre_command"
+            && !*ok
+            && d.contains("pre_command failed: false")),
+        "KO 'pre_command failed' absent : {checks:?}"
+    );
+    assert!(
+        checks.iter().all(|(n, _, _)| n != "build"),
+        "la commande de build ne doit pas être tentée : {checks:?}"
+    );
+    // La commande n'a jamais tourné : pas de rush2 en salle blanche.
+    let white = ctx
+        .build
+        .as_ref()
+        .expect("ctx.build posé")
+        .dir
+        .path()
+        .to_path_buf();
+    assert!(
+        !white.join("rush2").exists(),
+        "build exécuté malgré la pre_command KO"
+    );
+}
+
+#[test]
+fn binary_build_command_avec_makefile_check_cflags_applique() {
+    // Un Makefile EST présent (sans les cflags attendus) : le check
+    // cflags s'applique et pénalise, sans bloquer ; jamais de make.
+    let toml = r#"
+[project]
+name = "rush2"
+type = "binary"
+binary = "rush2"
+
+[build]
+command = "cc -o rush2 main.c"
+"#;
+    let (_bat_dir, battery) = load_battery(toml);
+    let target = TempDir::new().unwrap();
+    fs::write(
+        target.path().join("main.c"),
+        RUSH2_MAIN.replace(
+            "int lib_fn(void);\n\n",
+            "int lib_fn(void)\n{\n    return 42;\n}\n\n",
+        ),
+    )
+    .unwrap();
+    fs::write(target.path().join("Makefile"), "# Makefile sans cflags\n").unwrap();
+
+    let (ok, events, _ctx) = run_build(&battery, target.path());
+    assert!(ok, "cflags manquants : pénalité non bloquante : {events:?}");
+    let checks = extract_checks(&events);
+    assert!(
+        checks
+            .iter()
+            .any(|(n, ok, d)| n == "cflags" && !*ok && d.contains("missing cflag: -Wall")),
+        "pénalité cflags absente malgré le Makefile : {checks:?}"
+    );
+    assert!(
+        checks.iter().all(|(n, _, _)| n != "make"),
+        "make ne doit jamais tourner avec build.command : {checks:?}"
+    );
+}
