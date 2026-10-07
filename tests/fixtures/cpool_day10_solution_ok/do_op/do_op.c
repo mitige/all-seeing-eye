@@ -8,10 +8,10 @@
 #include <unistd.h>
 #include "../include/my.h"
 
-typedef struct s_op {
+struct s_op {
     char op;
     int (*f)(int, int);
-} t_op;
+};
 
 static void put_err(char const *str)
 {
@@ -50,8 +50,7 @@ static int op_mod(int a, int b)
     }
     return (a % b);
 }
-
-static t_op const OPS[] = {
+static struct s_op const OPS[] = {
     {'+', &op_add},
     {'-', &op_sub},
     {'*', &op_mul},
