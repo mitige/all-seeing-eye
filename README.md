@@ -1,8 +1,22 @@
 # All-Seeing Eye
 
-Moulinette Epitech 2026-2027 **locale** — reproduit le pipeline de la
-vraie moulinette (1:1) sur un rendu, avant le push : 7 étapes
-enchaînées, dashboard TUI live, score global et rapport JSON.
+**Copie 1:1 de la moulinette Epitech** pour le programme **Bachelor**
+(3 ans) et sa toute nouvelle **piscine C** (promo 2026-2027) — en
+**local**, sur ta machine, avant le push.
+
+La vraie moulinette corrige ton rendu après le push, dans son
+environnement, sans pitié. All-Seeing Eye rejoue exactement ce
+pipeline chez toi : mêmes étapes, même ordre, même sévérité, sortie
+comparée au caractère près — avec en prime un **dashboard TUI live**
+qui montre tout en temps réel et **toutes les erreurs de norme**
+listées (via `epiclang`/`banana`, le checker officiel, quand il est
+installé).
+
+**16 batteries embarquées** couvrant la piscine C : Day03 à Day13,
+Rush1, Rush2, Star, WorkshopLib et CountIsland — chacune validée à
+100 % sur sa solution de référence (`cargo test --test batteries_all`).
+
+Pipeline, dans l'ordre :
 
 Pipeline, dans l'ordre :
 
