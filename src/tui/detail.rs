@@ -101,7 +101,18 @@ fn contenu_step(app: &App, step: Step) -> (String, Vec<Line<'static>>, Vec<Line<
         if !detail.is_empty() {
             texte.push_str(&format!(" — {detail}"));
         }
-        epingle.push(Line::styled(texte, Style::default().fg(couleur)));
+        let style = Style::default().fg(couleur);
+        // Un détail peut être multi-lignes (stderr d'un pre_command,
+        // extrait de build…) : une `Line` ratatui n'éclate pas les
+        // '\n' — première ligne avec le check, suite en continuation
+        // indentée, jamais de texte mangé.
+        let mut lignes = texte.split('\n');
+        if let Some(premiere) = lignes.next() {
+            epingle.push(Line::styled(premiere.to_string(), style));
+        }
+        for suite in lignes {
+            epingle.push(Line::styled(format!("    {suite}"), style));
+        }
     }
     // Fautes cappées (MAX_NORME) : le reliquat est compté, jamais muet.
     if step == Step::Norme && app.norme_tronquees() > 0 {
@@ -271,6 +282,37 @@ mod tests {
         assert!(s.contains("make"), "check absent\n{s}");
         // Collé en bas par défaut : la dernière ligne de log est visible.
         assert!(s.contains("l29"), "dernier log absent\n{s}");
+    }
+
+    #[test]
+    fn detail_check_multiligne_est_eclate_sans_etre_mange() {
+        let mut app = app();
+        app.apply(Event::StepStarted {
+            step: Step::Build,
+            label: Step::Build.label().to_string(),
+        });
+        app.apply(Event::CheckFinished {
+            step: Step::Build,
+            name: "pre_command".to_string(),
+            ok: false,
+            detail: "pre_command failed: make -C cat -n all\nmake: *** No rule to make target 'all'.  Stop."
+                .to_string(),
+        });
+        va_a(&mut app, Selection::Step(Step::Build));
+        let (s, _) = texte(&app, 90, 12);
+        // Les deux lignes du détail sont visibles, non concaténées.
+        assert!(
+            s.contains("pre_command failed: make -C cat -n all"),
+            "première ligne mangée\n{s}"
+        );
+        assert!(
+            s.contains("No rule to make target"),
+            "suite du détail mangée\n{s}"
+        );
+        assert!(
+            !s.contains("allmake"),
+            "lignes concaténées sans séparateur\n{s}"
+        );
     }
 
     #[test]
