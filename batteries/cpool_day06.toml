@@ -1,0 +1,222 @@
+# Batterie cpool_day06 — C Pool Day06 « Pointers are back ».
+#
+# 17 exercices, un seul appel système autorisé côté étudiant :
+# my_putchar. L'étudiant ne rend NI son main NI son my_putchar.c :
+# chaque task est compilée avec le harness de la batterie
+# (harness/main_<task>.c + harness/my_putchar.c officiel), comme la
+# vraie moulinette qui ajoute SES main.c et my_putchar.c.
+#
+# Les tasks « Unit tests » du sujet (04, 11, 17 — tests Criterion à
+# écrire par l'étudiant) ne sont PAS des functions à corriger : elles
+# sont ignorées. Task 18 (my_putnbr_base) est hors de la liste de la
+# mission.
+#
+# cflags SANS -Werror, comme cpool_day03 : la compile est jugée sur le
+# C, la norme par l'étape Norme. Sous epiclang, banana tourne à la
+# compile et ses diagnostics de style deviennent des erreurs avec
+# -Werror — dont la C-H1 (« function declaration in source file »),
+# structurellement inévitable pour my_showstr/my_showmem : le sujet
+# interdit de rendre my_putchar.c, chaque delivery qui affiche doit
+# donc DÉCLARER `void my_putchar(char c);`. La vraie moulinette ne
+# bloque pas la compile sur le style ; nous non plus.
+#
+# Contrairement à day03, la plupart des fonctions du jour NE
+# s'affichent pas : elles retournent un pointeur ou un int. Les
+# harness impriment donc le résultat :
+# - fonctions char* avec buffer modifié (strcpy, strncpy, revstr,
+#   strupcase, strlowcase, strcapitalize) : pour chaque cas,
+#   `ret=<chaîne retournée>|buf=<dump du buffer>` — buffer memset à '#'
+#   et plafonné par un '\0' AVANT l'appel (état initial déterministe,
+#   les octets non écrits restent visibles), dump octet par octet à
+#   taille fixe ('\0' affiché `\0`, non-imprimable `\xNN` minuscule,
+#   '\' doublé) ;
+# - my_strstr : `ret=<chaîne ou (null)>` ;
+# - fonctions int (strcmp, strncmp, is*, getnbr_base) : `%d` par appel ;
+# - my_showstr / my_showmem : sortie BRUTE de la fonction suivie de
+#   `|<ret>` (stdout en mode non-bufferisé pour que le write() de
+#   my_putchar et les printf restent dans l'ordre). Le format de
+#   my_showmem reproduit celui du sujet au caractère près, adresses =
+#   offsets 0-based %08x (déterministe, comme l'exemple du sujet),
+#   padding calé sur sa dernière ligne (lignes de 66 caractères).
+#
+# strcmp/strncmp : les valeurs retournées suivent man 3 strcmp
+# (différence des premiers octets distincts, en unsigned char — comme
+# la libc) ; les cas de test restent dans l'ASCII, où cette sémantique
+# est la seule lecture possible du sujet.
+
+[project]
+name = "cpool_day06"
+type = "functions"
+allowed_functions = ["my_putchar"]
+tests_run_rule = false
+cflags = ["-Wall", "-Wextra"]
+
+[[task]]
+name = "my_strcpy"
+delivery = "my_strcpy.c"
+prototype = "char *my_strcpy(char *dest, char const *src)"
+harness = "cpool_day06/harness/main_my_strcpy.c"
+extra_sources = ["cpool_day06/harness/my_putchar.c"]
+stdout_file = "cpool_day06/expected/my_strcpy.out"
+exit_code = 0
+timeout_ms = 2000
+
+[[task]]
+name = "my_strncpy"
+delivery = "my_strncpy.c"
+prototype = "char *my_strncpy(char *dest, char const *src, int n)"
+harness = "cpool_day06/harness/main_my_strncpy.c"
+extra_sources = ["cpool_day06/harness/my_putchar.c"]
+stdout_file = "cpool_day06/expected/my_strncpy.out"
+exit_code = 0
+timeout_ms = 2000
+
+[[task]]
+name = "my_revstr"
+delivery = "my_revstr.c"
+prototype = "char *my_revstr(char *str)"
+harness = "cpool_day06/harness/main_my_revstr.c"
+extra_sources = ["cpool_day06/harness/my_putchar.c"]
+stdout_file = "cpool_day06/expected/my_revstr.out"
+exit_code = 0
+timeout_ms = 2000
+
+[[task]]
+name = "my_strstr"
+delivery = "my_strstr.c"
+prototype = "char *my_strstr(char *str, char const *to_find)"
+harness = "cpool_day06/harness/main_my_strstr.c"
+extra_sources = ["cpool_day06/harness/my_putchar.c"]
+stdout_file = "cpool_day06/expected/my_strstr.out"
+exit_code = 0
+timeout_ms = 2000
+
+[[task]]
+name = "my_strcmp"
+delivery = "my_strcmp.c"
+prototype = "int my_strcmp(char const *s1, char const *s2)"
+harness = "cpool_day06/harness/main_my_strcmp.c"
+extra_sources = ["cpool_day06/harness/my_putchar.c"]
+stdout_file = "cpool_day06/expected/my_strcmp.out"
+exit_code = 0
+timeout_ms = 2000
+
+[[task]]
+name = "my_strncmp"
+delivery = "my_strncmp.c"
+prototype = "int my_strncmp(char const *s1, char const *s2, int n)"
+harness = "cpool_day06/harness/main_my_strncmp.c"
+extra_sources = ["cpool_day06/harness/my_putchar.c"]
+stdout_file = "cpool_day06/expected/my_strncmp.out"
+exit_code = 0
+timeout_ms = 2000
+
+[[task]]
+name = "my_strupcase"
+delivery = "my_strupcase.c"
+prototype = "char *my_strupcase(char *str)"
+harness = "cpool_day06/harness/main_my_strupcase.c"
+extra_sources = ["cpool_day06/harness/my_putchar.c"]
+stdout_file = "cpool_day06/expected/my_strupcase.out"
+exit_code = 0
+timeout_ms = 2000
+
+[[task]]
+name = "my_strlowcase"
+delivery = "my_strlowcase.c"
+prototype = "char *my_strlowcase(char *str)"
+harness = "cpool_day06/harness/main_my_strlowcase.c"
+extra_sources = ["cpool_day06/harness/my_putchar.c"]
+stdout_file = "cpool_day06/expected/my_strlowcase.out"
+exit_code = 0
+timeout_ms = 2000
+
+[[task]]
+name = "my_strcapitalize"
+delivery = "my_strcapitalize.c"
+prototype = "char *my_strcapitalize(char *str)"
+harness = "cpool_day06/harness/main_my_strcapitalize.c"
+extra_sources = ["cpool_day06/harness/my_putchar.c"]
+stdout_file = "cpool_day06/expected/my_strcapitalize.out"
+exit_code = 0
+timeout_ms = 2000
+
+[[task]]
+name = "my_str_isalpha"
+delivery = "my_str_isalpha.c"
+prototype = "int my_str_isalpha(char const *str)"
+harness = "cpool_day06/harness/main_my_str_isalpha.c"
+extra_sources = ["cpool_day06/harness/my_putchar.c"]
+stdout_file = "cpool_day06/expected/my_str_isalpha.out"
+exit_code = 0
+timeout_ms = 2000
+
+[[task]]
+name = "my_str_isnum"
+delivery = "my_str_isnum.c"
+prototype = "int my_str_isnum(char const *str)"
+harness = "cpool_day06/harness/main_my_str_isnum.c"
+extra_sources = ["cpool_day06/harness/my_putchar.c"]
+stdout_file = "cpool_day06/expected/my_str_isnum.out"
+exit_code = 0
+timeout_ms = 2000
+
+[[task]]
+name = "my_str_islower"
+delivery = "my_str_islower.c"
+prototype = "int my_str_islower(char const *str)"
+harness = "cpool_day06/harness/main_my_str_islower.c"
+extra_sources = ["cpool_day06/harness/my_putchar.c"]
+stdout_file = "cpool_day06/expected/my_str_islower.out"
+exit_code = 0
+timeout_ms = 2000
+
+[[task]]
+name = "my_str_isupper"
+delivery = "my_str_isupper.c"
+prototype = "int my_str_isupper(char const *str)"
+harness = "cpool_day06/harness/main_my_str_isupper.c"
+extra_sources = ["cpool_day06/harness/my_putchar.c"]
+stdout_file = "cpool_day06/expected/my_str_isupper.out"
+exit_code = 0
+timeout_ms = 2000
+
+[[task]]
+name = "my_str_isprintable"
+delivery = "my_str_isprintable.c"
+prototype = "int my_str_isprintable(char const *str)"
+harness = "cpool_day06/harness/main_my_str_isprintable.c"
+extra_sources = ["cpool_day06/harness/my_putchar.c"]
+stdout_file = "cpool_day06/expected/my_str_isprintable.out"
+exit_code = 0
+timeout_ms = 2000
+
+[[task]]
+name = "my_getnbr_base"
+delivery = "my_getnbr_base.c"
+prototype = "int my_getnbr_base(char const *str, char const *base)"
+harness = "cpool_day06/harness/main_my_getnbr_base.c"
+extra_sources = ["cpool_day06/harness/my_putchar.c"]
+stdout_file = "cpool_day06/expected/my_getnbr_base.out"
+exit_code = 0
+timeout_ms = 2000
+
+[[task]]
+name = "my_showstr"
+delivery = "my_showstr.c"
+prototype = "int my_showstr(char const *str)"
+harness = "cpool_day06/harness/main_my_showstr.c"
+extra_sources = ["cpool_day06/harness/my_putchar.c"]
+stdout_file = "cpool_day06/expected/my_showstr.out"
+exit_code = 0
+timeout_ms = 2000
+
+[[task]]
+name = "my_showmem"
+delivery = "my_showmem.c"
+prototype = "int my_showmem(char const *str, int size)"
+harness = "cpool_day06/harness/main_my_showmem.c"
+extra_sources = ["cpool_day06/harness/my_putchar.c"]
+stdout_file = "cpool_day06/expected/my_showmem.out"
+exit_code = 0
+timeout_ms = 2000

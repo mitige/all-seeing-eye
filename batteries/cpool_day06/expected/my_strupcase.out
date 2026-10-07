@@ -1,0 +1,4 @@
+ret=HELLO|buf=HELLO\0#################\0
+ret=HELLO WORLD 42!|buf=HELLO WORLD 42!\0#######\0
+ret=|buf=\0######################\0
+ret=42 ALREADY!|buf=42 ALREADY!\0###########\0
