@@ -14,7 +14,7 @@ static void put_c(char c)
 
 static void print_hex(unsigned char c)
 {
-    char const *hex = "0123456789abcdef";
+    const char *hex = "0123456789abcdef";
 
     put_c(hex[c / 16]);
     put_c(hex[c % 16]);

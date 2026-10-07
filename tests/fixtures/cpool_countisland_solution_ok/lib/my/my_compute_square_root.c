@@ -7,7 +7,7 @@
 
 int my_compute_square_root(int nb)
 {
-    long i = 1;
+    long int i = 1;
 
     if (nb <= 0) {
         return (0);

@@ -16,7 +16,7 @@ static int overflows(long nbr, int sign)
 
 int my_getnbr(char const *str)
 {
-    long nbr = 0;
+    long int nbr = 0;
     int sign = 1;
     int i = 0;
 
