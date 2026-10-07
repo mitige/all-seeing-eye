@@ -1,0 +1,58 @@
+# Batterie cpool_star — C Pool « Star » (sujet v3 : refs/cpool_Star.txt).
+#
+# Un seul exercice : void star(unsigned int size), delivery star.c,
+# compilé avec le harness de la batterie (harness/main_star.c +
+# harness/my_putchar.c officiel), comme la vraie moulinette qui
+# ajoute SES main.c et my_putchar.c. Seul my_putchar (donc write)
+# est autorisé côté étudiant. size == 0 n'est pas une erreur : la
+# fonction n'affiche rien.
+#
+# CHOIX DE DÉCOUPE : une seule task « star » plutôt qu'une task par
+# taille — comme my_put_nbr/my_print_combn de cpool_day03, le main
+# enchaîne les appels et la sortie attendue est la concaténation
+# brute des figures : star(0) (vide), puis star(1)..star(6). Les
+# tailles 1, 2 et 5 sont les exemples du sujet ; 3, 4 et 6
+# verrouillent l'interpolation de la géométrie (tailles paires et
+# impaires). Chaque ligne de figure est terminée par '\n', sans
+# espace surnuméraire en fin de ligne (vérifié au cat -e du sujet
+# pour les tailles 1 et 2 : les espaces trailing comptent — il n'y
+# en a pas).
+#
+# GÉOMÉTRIE (v3, déduite des figures 1/2 du sujet — données cat -e
+# exactes — et 5 — rendu PDF du sujet entaché de dérives d'espaces
+# propres à l'extraction ; les formules ci-dessous reproduisent 1 et
+# 2 au caractère près et 5 à la dérive d'extraction près) :
+# - hauteur 4n+1, largeur n²+n+5 (barre et première ligne du corps
+#   alignées au bord droit) ;
+# - pointe (n lignes) : ligne 0 = 3n espaces + '*' ; ligne k
+#   (1 ≤ k < n) = 3n-k espaces, '*', 3k-2 espaces, '*' ;
+# - barre (2 barres identiques) : 2n+1 '*', n²-3n+3 espaces,
+#   2n+1 '*' ;
+# - corps (2n-1 lignes, sablier) : ligne j, d = min(j, 2n-2-j) :
+#   1+d espaces, '*', n²+n+2-(⌊n/2⌋+1)·d espaces, '*' ;
+# - puis barre, puis la pointe en miroir.
+# L'étoile v3 « penche » à droite : c'est voulu (les figures
+# officielles ne sont pas symétriques gauche-droite).
+#
+# cflags SANS -Werror, comme cpool_day03 : la compile est jugée sur
+# le C, la norme par l'étape Norme. Le sujet interdit de rendre
+# my_putchar.c, chaque delivery doit donc DÉCLARER
+# `void my_putchar(char c);` — la C-H1 est structurellement
+# inévitable ici (identique à cpool_day03).
+
+[project]
+name = "cpool_star"
+type = "functions"
+allowed_functions = ["my_putchar"]
+tests_run_rule = false
+cflags = ["-Wall", "-Wextra"]
+
+[[task]]
+name = "star"
+delivery = "star.c"
+prototype = "void star(unsigned int size)"
+harness = "cpool_star/harness/main_star.c"
+extra_sources = ["cpool_star/harness/my_putchar.c"]
+stdout_file = "cpool_star/expected/star.out"
+exit_code = 0
+timeout_ms = 2000
