@@ -45,7 +45,7 @@ static char const *error_message(int err)
 static void print_error(char const *path)
 {
     int err = errno;
-    char const *msg = error_message(err);
+    const char *msg = error_message(err);
 
     put_all(2, "cat: ", 5);
     put_all(2, path, my_strlen(path));
