@@ -1,0 +1,103 @@
+# Batterie cpool_day04 — C Pool Day04 « Pointers ».
+#
+# 6 exercices, un seul appel système autorisé côté étudiant :
+# my_putchar. L'étudiant ne rend NI son main NI son my_putchar.c :
+# chaque task est compilée avec le harness de la batterie
+# (harness/main_<task>.c + harness/my_putchar.c officiel), comme la
+# vraie moulinette qui ajoute SES main.c et my_putchar.c.
+#
+# cflags SANS -Werror, volontairement : la compile est jugée sur le C,
+# la norme par l'étape Norme. Sous epiclang, banana tourne à la
+# compile et ses diagnostics de style deviennent des erreurs avec
+# -Werror — dont la C-H1 (« function declaration in source file »),
+# structurellement inévitable ici : le sujet interdit de rendre
+# my_putchar.c, chaque delivery qui l'utilise doit donc DÉCLARER
+# `void my_putchar(char c);`. La vraie moulinette ne bloque pas la
+# compile sur le style ; nous non plus.
+#
+# Sorties attendues : contrairement au Day03, la plupart des fonctions
+# du Day04 n'affichent rien (my_swap, my_strlen, my_getnbr,
+# my_sort_int_array agissent par pointeurs ou retour) : c'est le
+# HARNESS qui affiche les résultats via printf, une ligne par appel.
+# - my_swap(1,2) my_swap(-42,42) my_swap(a,a) → « 2 1\n42 -42\n2\n » ;
+# - my_putstr : sortie BRUTE de la fonction, SANS newline final
+#   (comportement historique Epitech) — les 5 appels concaténés
+#   (« Hello World\n0123456789\nEpitech! ») ;
+# - my_strlen("") ("a") ("Hello World") ("0123456789")
+#   → « 0\n1\n11\n10\n » ;
+# - my_evil_str : les 6 exemples du sujet (a, ab, …, abcdef), la
+#   chaîne vide et « Hello World! », inversés, un par ligne ;
+# - my_getnbr : les 4 exemples tordus du sujet (« …+-42 » → -42,
+#   « 42a43 » → 42, les deux débordements → 0) plus les cas limites
+#   classiques (« --42-42 » → 42, INT_MIN/INT_MAX, ±INT_MAX∓1 → 0,
+#   « », « 0 », « -0 ») ;
+# - my_sort_int_array : 5 tableaux triés affichés (dont INT_MIN/
+#   INT_MAX, doublons, singleton, déjà trié) puis « ok » après un
+#   appel size 0 qui ne doit pas planter.
+
+[project]
+name = "cpool_day04"
+type = "functions"
+allowed_functions = ["my_putchar"]
+tests_run_rule = false
+cflags = ["-Wall", "-Wextra"]
+
+[[task]]
+name = "my_swap"
+delivery = "my_swap.c"
+prototype = "void my_swap(int *a, int *b)"
+harness = "cpool_day04/harness/main_my_swap.c"
+extra_sources = ["cpool_day04/harness/my_putchar.c"]
+stdout_file = "cpool_day04/expected/my_swap.out"
+exit_code = 0
+timeout_ms = 2000
+
+[[task]]
+name = "my_putstr"
+delivery = "my_putstr.c"
+prototype = "int my_putstr(char const *str)"
+harness = "cpool_day04/harness/main_my_putstr.c"
+extra_sources = ["cpool_day04/harness/my_putchar.c"]
+stdout_file = "cpool_day04/expected/my_putstr.out"
+exit_code = 0
+timeout_ms = 2000
+
+[[task]]
+name = "my_strlen"
+delivery = "my_strlen.c"
+prototype = "int my_strlen(char const *str)"
+harness = "cpool_day04/harness/main_my_strlen.c"
+extra_sources = ["cpool_day04/harness/my_putchar.c"]
+stdout_file = "cpool_day04/expected/my_strlen.out"
+exit_code = 0
+timeout_ms = 2000
+
+[[task]]
+name = "my_evil_str"
+delivery = "my_evil_str.c"
+prototype = "char *my_evil_str(char *str)"
+harness = "cpool_day04/harness/main_my_evil_str.c"
+extra_sources = ["cpool_day04/harness/my_putchar.c"]
+stdout_file = "cpool_day04/expected/my_evil_str.out"
+exit_code = 0
+timeout_ms = 2000
+
+[[task]]
+name = "my_getnbr"
+delivery = "my_getnbr.c"
+prototype = "int my_getnbr(char const *str)"
+harness = "cpool_day04/harness/main_my_getnbr.c"
+extra_sources = ["cpool_day04/harness/my_putchar.c"]
+stdout_file = "cpool_day04/expected/my_getnbr.out"
+exit_code = 0
+timeout_ms = 2000
+
+[[task]]
+name = "my_sort_int_array"
+delivery = "my_sort_int_array.c"
+prototype = "void my_sort_int_array(int *array, int size)"
+harness = "cpool_day04/harness/main_my_sort_int_array.c"
+extra_sources = ["cpool_day04/harness/my_putchar.c"]
+stdout_file = "cpool_day04/expected/my_sort_int_array.out"
+exit_code = 0
+timeout_ms = 2000
