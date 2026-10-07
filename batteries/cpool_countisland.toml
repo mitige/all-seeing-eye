@@ -1,0 +1,116 @@
+# Batterie cpool_countisland — C Pool CountIsland « BACK TO RECURSION ».
+#
+# Un seul exercice au sujet : `int count_island(char **world)` — une
+# grille de '.' et 'X' (dernière ligne NULL), remplacer les X de
+# chaque île par son numéro (0-indexé, ordre de lecture ligne par
+# ligne), adjacence 4-directionnelle, ≤ 10 îles, retour = nombre
+# d'îles.
+#
+# STRUCTURE DU RENDU (sujet) : tous les *.c à la RACINE du rendu,
+# libmy dans lib/my (construite par lib/my/build.sh), headers dans
+# include/. La vraie moulinette fait :
+#   cd lib/my && ./build.sh && cd ../..
+#   clang -o count_island *.c test_files/our_main.c -I./include \
+#       -L./lib/my -lmy
+#
+# TRADUCTION EN BATTERIE :
+# - [build].pre_commands = `cd lib/my && ./build.sh` (l'exemple
+#   canonique du README, comme cpool_day07) : un échec du script fait
+#   échouer l'étape Build et skippe Functional — comme la vraie
+#   moulinette sans libmy.a.
+# - UNE SEULE task, delivery = "." (dossier) : delivery_sources est
+#   non récursif (src/battery/mod.rs) — seuls les *.c DIRECTS de la
+#   racine sont livrés, exactement comme le `*.c` du sujet ; lib/ et
+#   include/ ne sont pas ramassés. Une seule task, et pas une par
+#   monde : deux tasks avec la même delivery "." résoudraient les
+#   mêmes sources → mêmes stems de .o → KO « collision de .o » de la
+#   garde d'unicité de build_functions. Le harness joue donc TOUS les
+#   mondes en une seule exécution, comme le our_main.c du sujet.
+# - cflags AVEC -Iinclude : la ligne de compile du sujet porte
+#   -I./include ; l'étape Build compile les deliveries avec les SEULS
+#   cflags (include_dirs n'est appliqué qu'au link fonctionnel de la
+#   task) — sans -Iinclude dans cflags, un count_island.c qui inclut
+#   "my.h" (licite, c'est même l'usage attendu) échouerait à l'étape
+#   Build alors que la vraie moulinette le compile. include_dirs est
+#   gardé sur la task en redondance assumée (double -I, no-op).
+#   cflags SANS -Werror, comme cpool_day03/day07 : sous epiclang,
+#   banana tourne à la compile et ses diagnostics de style
+#   deviendraient des erreurs — la norme est jugée par l'étape Norme.
+# - link_flags = ["-Llib/my", "-lmy"] : la lib est prouvée PAR L'USAGE
+#   (comme day07) — le harness affiche via my_putstr/my_putchar/
+#   my_put_nbr ; un symbole absent de la libmy de l'étudiant fait un
+#   KO de link, comme chez la vraie moulinette.
+# - prototype volontairement omis : le sujet écrit `char** world`,
+#   beaucoup de rendus écrivent `char **world` — le check textuel
+#   (blancs normalisés) ne peut matcher les deux formes sans faux
+#   négatif (même choix que les mains de day07). La signature est
+#   prouvée par le link : le harness déclare
+#   `int count_island(char **world);` — toute dérive de prototype
+#   casse la compile de la task.
+#
+# allowed_functions : write (seul syscall autorisé par le sujet) + les
+# 30 fonctions de la libmy. L'étape Symbols ne scanne QUE les .o des
+# deliveries racine : un count_island.c qui appelle sa lib (ex.
+# my_strlen) y voit un indéfini non résolu par les .o scannés — la
+# libmy est du code étudiant, whitelistée comme sur day07.
+#
+# MONDES DU HARNESS (9, tous ≤ 10 îles) : empty_world (tableau vide,
+# world[0] == NULL — le sujet décrit un FICHIER, un fichier vide est
+# licite), blank_world (que des '.'), one_island, two_islands (ordre
+# de lecture), diagonal_trap (5 X en quinconce — LE discriminant :
+# une adjacence 8-directionnelle y fusionne tout en 1 île au lieu de
+# 5), l_shape (remplissage non trivial + X diagonal isolé), single_x
+# (grille 1×1), big_map (10×10, 5 îles de formes variées),
+# ten_islands (le max du sujet, numérotation 0..9 en ordre de lecture).
+
+[project]
+name = "cpool_countisland"
+type = "functions"
+allowed_functions = [
+    "write",
+    "my_putchar",
+    "my_isneg",
+    "my_put_nbr",
+    "my_swap",
+    "my_putstr",
+    "my_strlen",
+    "my_getnbr",
+    "my_sort_int_array",
+    "my_compute_power_rec",
+    "my_compute_square_root",
+    "my_is_prime",
+    "my_find_prime_sup",
+    "my_strcpy",
+    "my_strncpy",
+    "my_revstr",
+    "my_strstr",
+    "my_strcmp",
+    "my_strncmp",
+    "my_strupcase",
+    "my_strlowcase",
+    "my_strcapitalize",
+    "my_str_isalpha",
+    "my_str_isnum",
+    "my_str_islower",
+    "my_str_isupper",
+    "my_str_isprintable",
+    "my_showstr",
+    "my_showmem",
+    "my_strcat",
+    "my_strncat",
+]
+tests_run_rule = false
+cflags = ["-Wall", "-Wextra", "-Iinclude"]
+
+[build]
+pre_commands = ["cd lib/my && ./build.sh"]
+
+[[task]]
+name = "count_island"
+delivery = "."
+harness = "cpool_countisland/harness/main_count_island.c"
+include_dirs = ["include"]
+link_flags = ["-Llib/my", "-lmy"]
+stdout_file = "cpool_countisland/expected/count_island.out"
+exit_code = 0
+timeout_ms = 2000
