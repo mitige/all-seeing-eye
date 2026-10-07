@@ -1,0 +1,227 @@
+# Batterie cpool_rush2 — C Pool Rush2 « What language is this? ».
+#
+# Binaire unique `rush2` construit SANS Makefile, comme le sujet :
+#   cd lib/my && ./build.sh        -> [build].pre_commands
+#   clang -o rush2 *.c -I./include -L./lib/my -lmy
+#                                -> [build].command
+# Le prelim skippe ses sondes de règles Makefile dès que
+# [build].command existe (aucun Makefile n'est rendu pour un rush) ;
+# le check des cflags ne s'applique que si un Makefile existe — sans
+# objet ici, le sujet n'impose aucun flag de compilation. Le champ
+# `cflags = ["-I./include"]` n'est donc PAS joué au build : il est
+# forwardé à l'étape Norme (epiclang -fsyntax-only) pour que les
+# `#include "my.h"` / `#include "rush2.h"` des sources racines se
+# résolvent pendant l'analyse. Il reflète le -I de la ligne de build
+# du sujet.
+#
+# ÉTAPES CUMULATIVES — point capital du sujet : les 4 steps décrivent
+# les étapes de construction du MÊME binaire. Rien dans argv ne
+# distingue l'exemple du step 1 de celui du step 3 (le step 2 montre
+# `A i I i` — 4 lettres, SANS fréquences — et le step 3 `a q e i` —
+# 4 lettres, AVEC fréquences). Le binaire final imprime donc TOUJOURS
+# `c:n (xx.yy%)` par lettre puis `=> Langue`. Les tests ci-dessous
+# reprennent les COMMANDES EXACTES du sujet, avec les sorties attendues
+# au format FINAL (pas le format intermédiaire affiché aux steps 1/2).
+# Inventaire du sujet : 3 exemples au step 1 (a, A, j), 2 au step 2,
+# et les steps 3/4 partagent la MÊME commande (`a q e i` sur le texte
+# « Good things… ») — un seul test la couvre (step3_step4_sujet).
+#
+# FRÉQUENCES — mode de calcul : le sujet n'autorise que write(2), donc
+# pas de printf("%.2f") : la référence calcule en entiers
+# (count*10000)/total, c.-à-d. TRONCATURE au centième. Tous les
+# pourcentages des exemples du sujet (6.25, 0.00, 8.33, 12.50) sont
+# identiques en troncature et en arrondi — ils sont revérifiés à la
+# main (dénominateur 48 lettres a-z/A-Z sur « Good things… », 45 sur
+# « Just because… », 24 sur « I hope… »). En dehors des exemples du
+# sujet, les valeurs épinglées suivent la référence : un rendu qui
+# ARRONDIT divergerait sur step1_a (8.88 vs 8.89) et step2 (16.66 vs
+# 16.67) — subjectivité documentée, inhérente au sujet.
+#
+# DÉTECTION DE LANGUE — algorithme LIBRE selon le sujet (« an
+# algorithm of your own », « many cases are ambiguous »). La référence
+# utilise la somme des écarts absolus entre les fréquences du texte et
+# les tables classiques (English/French/German/Spanish), premier
+# minimum retenu. Conséquences assumées dans les tests :
+# - `=> English` n'est exigé QUE pour l'exemple exact du sujet
+#   (step3_step4_sujet, marge confortable : 5538 contre 6738+) et sur
+#   step3_s_t (même texte) ;
+# - sur les textes COURTS des steps 1/2, la référence répond French
+#   (« Just because… », 45 lettres) et Spanish (« I hope… », 24
+#   lettres) : ces textes ont un profil atypique et le sujet reconnaît
+#   lui-même l'ambiguïté. Les tests épinglent la réponse DE LA
+#   RÉFÉRENCE, documentée ici — un algorithme étudiant différent mais
+#   légitime peut diverger sur ces deux lignes `=> ` ;
+# - step4_francais : texte manifestement français (101 lettres,
+#   vocabulaire et profil typés) où la référence répond French avec
+#   une marge nette (3602 contre 3713 German / 4641 Spanish / 5499
+#   English) ; les lettres demandées e/a/s/u ont des pourcentages
+#   identiques en troncature et en arrondi (18.81/6.93/8.91/4.95).
+#
+# ERREURS — le sujet impose « error output » + exit 84 mais ne donne
+# AUCUN message. La batterie épingle celui de la référence :
+# "usage: rush2 text letter [letter ...]\n" — fixe, SANS argv[0] (le
+# binaire est exécuté par son chemin absolu en salle blanche : un
+# message contenant argv[0] serait non déterministe). Tout message non
+# vide sur stderr reste conforme au sujet ; seul celui de la référence
+# passe la comparaison au caractère près.
+#
+# NON COUVERT, et pourquoi :
+# - texte sans aucune lettre (dénominateur 0) : comportement non spécifié
+#   (la référence imprime 0.00% et choisit le premier minimum — aucun
+#   crash, jamais de SIGFPE) — rien à épingler sans arbitraire ;
+# - arguments « lettre » non alphabétiques ou multi-caractères : non
+#   spécifié (la référence lit argv[i][0]) ;
+# - tests unitaires du sujet (« Don't forget to write unit tests ») :
+#   pas de Makefile, donc pas de règle tests_run à sonder —
+#   tests_run_rule = false ;
+# - détections German/Spanish sur textes dédiés : le sujet n'épingle
+#   que l'exemple English ; la couverture reste centrée sujet.
+#
+# allowed_functions : le sujet n'autorise QUE write (toute la sortie
+# passe par la libmy : my_putchar/my_putstr/my_put_nbr wrappent write).
+# Pas d'errno ici — pas de __errno_location à whitelister.
+#
+# Solution de référence : tests/fixtures/cpool_rush2_solution_ok/
+# (main.c, rush2.c, language.c, include/{my,rush2}.h, lib/my/ reprise
+# de la lib Day07 + build.sh). Validée 100.0 % / exit 0 sur la
+# moulinette locale (epiclang officiel + banana-check-repo).
+
+[project]
+name = "cpool_rush2"
+type = "binary"
+binary = "rush2"
+cflags = ["-I./include"]
+allowed_functions = ["write"]
+tests_run_rule = false
+
+[build]
+pre_commands = ["cd lib/my && ./build.sh"]
+command = "clang -o rush2 *.c -I./include -L./lib/my -lmy"
+
+# --- Step 1 : les 3 exemples du sujet (texte « Just because… », 45 lettres)
+# Sorties au format FINAL (fréquences + langue) — voir l'en-tête.
+
+[[functional_test]]
+name = "step1_lettre_a"
+args = ["Just because I don't care doesn't mean I don't understand!", "a"]
+stdout = """
+a:4 (8.88%)
+=> French
+"""
+exit_code = 0
+
+[[functional_test]]
+name = "step1_lettre_a_majuscule"
+args = ["Just because I don't care doesn't mean I don't understand!", "A"]
+stdout = """
+A:4 (8.88%)
+=> French
+"""
+exit_code = 0
+
+[[functional_test]]
+name = "step1_lettre_j"
+args = ["Just because I don't care doesn't mean I don't understand!", "j"]
+stdout = """
+j:1 (2.22%)
+=> French
+"""
+exit_code = 0
+
+# Bord : lettre absente du texte (0.00% est sans ambiguïté d'arrondi).
+
+[[functional_test]]
+name = "step1_lettre_absente_z"
+args = ["Just because I don't care doesn't mean I don't understand!", "z"]
+stdout = """
+z:0 (0.00%)
+=> French
+"""
+exit_code = 0
+
+# --- Step 2 : les 2 exemples du sujet (texte « I hope… », 24 lettres)
+# Ordre des args respecté, casse de l'arg respectée à l'affichage,
+# comptage insensible à la casse (A:3 compte les 'a').
+
+[[functional_test]]
+name = "step2_deux_lettres"
+args = ["I hope I didn't brain my damage.", "a", "i"]
+stdout = """
+a:3 (12.50%)
+i:4 (16.66%)
+=> Spanish
+"""
+exit_code = 0
+
+[[functional_test]]
+name = "step2_casse_et_ordre"
+args = ["I hope I didn't brain my damage.", "A", "i", "I", "i"]
+stdout = """
+A:3 (12.50%)
+i:4 (16.66%)
+I:4 (16.66%)
+i:4 (16.66%)
+=> Spanish
+"""
+exit_code = 0
+
+# --- Steps 3 & 4 : l'exemple EXACT du sujet (même commande aux deux
+# steps ; 48 lettres ; fréquences revérifiées à la main ; seul test où
+# « => English » est exigé par le sujet lui-même).
+
+[[functional_test]]
+name = "step3_step4_exemple_sujet"
+args = ["Good things do not end with 'ium'. They end with 'mania' or 'teria'.", "a", "q", "e", "i"]
+stdout = """
+a:3 (6.25%)
+q:0 (0.00%)
+e:4 (8.33%)
+i:6 (12.50%)
+=> English
+"""
+exit_code = 0
+
+# Même texte, autres lettres — pourcentages sans ambiguïté d'arrondi
+# (1/48 = 2.0833…, 6/48 = 12.50 exactement).
+
+[[functional_test]]
+name = "step3_frequences_s_t"
+args = ["Good things do not end with 'ium'. They end with 'mania' or 'teria'.", "s", "t"]
+stdout = """
+s:1 (2.08%)
+t:6 (12.50%)
+=> English
+"""
+exit_code = 0
+
+# --- Step 4 : texte manifestement français (hors sujet — la réponse
+# épinglée est celle de la référence, voir l'en-tête).
+
+[[functional_test]]
+name = "step4_texte_francais"
+args = ["Le soleil brille sur la riviere et le vent souffle doucement dans les arbres pendant que les enfants jouent dans le jardin", "e", "a", "s", "u"]
+stdout = """
+e:19 (18.81%)
+a:7 (6.93%)
+s:9 (8.91%)
+u:5 (4.95%)
+=> French
+"""
+exit_code = 0
+
+# --- Erreurs : message sur stderr + exit 84 (message épinglé = celui
+# de la référence ; le sujet laisse le contenu libre — voir l'en-tête).
+
+[[functional_test]]
+name = "erreur_aucun_argument"
+args = []
+stdout = ""
+stderr = "usage: rush2 text letter [letter ...]\n"
+exit_code = 84
+
+[[functional_test]]
+name = "erreur_un_seul_argument"
+args = ["Just because I don't care doesn't mean I don't understand!"]
+stdout = ""
+stderr = "usage: rush2 text letter [letter ...]\n"
+exit_code = 84
