@@ -7,8 +7,8 @@
 
 mod common;
 
-use common::{run_pipeline_isole, fixture};
 use all_seeing_eye::battery::Battery;
+use common::{fixture, run_pipeline_isole};
 
 /// Batteries éprouvées end-to-end : (nom embarqué, fixture).
 const BATTERIES: &[(&str, &str)] = &[
