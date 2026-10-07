@@ -55,8 +55,19 @@ all-seeing-eye report                 # rouvre le dernier rapport (TUI ; texte a
 
 Découverte de la batterie, dans l'ordre : `./moulinette.toml` →
 `~/.config/all-seeing-eye/batteries/*.toml` dont `project.name`
-correspond au nom du dossier courant → batteries embarquées
-(`cpool_day03`).
+correspond au nom du dossier courant → batteries embarquées.
+
+Batteries embarquées (C Pool 2026-2027, toutes validées à 100 % sur
+leurs solutions de référence par `tests/batteries_all.rs`) :
+`cpool_day03` (fonctions de base), `cpool_day04` (pointeurs),
+`cpool_day05` (récursivité), `cpool_day06` (strings, 17 tasks),
+`cpool_day07` (strcat + lib + programmes à args), `cpool_day08`
+(allocation, word array, bases), `cpool_day09` (headers, structs,
+couleurs), `cpool_day10` (do-op + advanced), `cpool_day11` (listes
+chaînées, 11 tasks), `cpool_day12` (cat), `cpool_day13` (CSFML —
+requiert la lib), `cpool_rush1` (5 carrés), `cpool_rush2` (détection
+de langue), `cpool_star` (l'étoile), `cpool_workshoplib` (libmy, 30
+fonctions), `cpool_countisland` (îles).
 
 Rapports du dernier run : `~/.local/share/all-seeing-eye/last.json`
 (machine) et `last.txt` (humain).
