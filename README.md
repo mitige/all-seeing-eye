@@ -18,8 +18,6 @@ Rush1, Rush2, Star, WorkshopLib et CountIsland — chacune validée à
 
 Pipeline, dans l'ordre :
 
-Pipeline, dans l'ordre :
-
 1. **Vérifications préliminaires** — fichiers interdits (C-O1),
    `banana-check-repo` s'il est installé, puis Makefile + règles
    (binary) ou rendus + prototypes (functions) ;
