@@ -1,0 +1,179 @@
+# Batterie cpool_day11 — C Pool Day11 « Linked Lists ».
+#
+# 11 exercices de listes chaînées (my_params_to_list … my_merge),
+# trois appels système autorisés côté étudiant — whitelist EXACTE des
+# preliminaries du sujet : « Allowed system function(s): write,
+# malloc, free ».
+#
+# La struct du sujet :
+#     typedef struct linked_list {
+#             void *data;
+#             struct linked_list *next;
+#     } linked_list_t;
+# Le sujet impose à l'étudiant de la rendre dans include/mylist.h
+# (« This structure must be found in a file named mylist.h in your
+# include folder »). Deux précautions complémentaires :
+# - le harness transporte SA PROPRE copie à l'identique
+#   (harness/mylist.h) : pour un #include "mylist.h" entre guillemets,
+#   le préprocesseur cherche d'abord dans le dossier du fichier
+#   incluant — le harness compile donc toujours contre la struct du
+#   sujet, même si l'étudiant a oublié la sienne ou a préféré la
+#   redéclarer dans chaque .c ;
+# - les cflags portent -Iinclude : les deliveries de l'étudiant qui
+#   font #include "mylist.h" trouvent SON header (salle blanche pour
+#   build/functional, racine du rendu pour la norme — le -I des cflags
+#   est forwardé aux trois étapes).
+# Les prototypes du sujet sont centralisés dans harness/prototypes.h
+# (inclus par chaque main — une déclaration dans un .c serait une
+# C-H1 au compile epiclang) ; helpers de listes dans
+# harness/list_common.c + list_cmp.c (préfixe ll_, jamais de collision
+# avec les my_* de la delivery).
+#
+# La vraie moulinette linke les tasks avec la libmy de l'étudiant ; la
+# batterie locale, elle, ne compile QUE la delivery de la task avec
+# son harness (comme cpool_day03/cpool_day08) : chaque delivery doit
+# donc être AUTO-SUFFISANTE. En particulier my_merge ne peut pas
+# appeler my_add_in_sorted_list (symbole indéfini au link) — la
+# solution de référence ré-insère les nœuds de begin2 un à un, sans
+# malloc.
+#
+# cflags SANS -Werror, comme cpool_day03 : la compile est jugée sur le
+# C, la norme par l'étape Norme. La vraie moulinette ne bloque pas la
+# compile sur le style ; nous non plus.
+#
+# Conventions des harness (sorties attendues au caractère près) :
+# - une liste est affichée un élément par ligne (données = chaînes,
+#   cmp = strcmp via ll_cmp_str / ll_cmp_str_vv) ;
+# - « === » sur sa ligne sépare les cas d'un même test ; « NULL »
+#   matérialise une liste/valeur NULL ; « END » borne un cas qui ne
+#   doit rien afficher ;
+# - les valeurs de retour de my_apply_on_nodes,
+#   my_apply_on_matching_nodes et my_delete_nodes NE SONT PAS testées :
+#   le sujet ne les spécifie pas (int rendu, jamais décrit) ;
+# - my_concat_list : le sujet interdit de créer des éléments — le
+#   harness vérifie l'IDENTITÉ des nœuds chaînés (marqueur LINKED si
+#   le nœud de begin2 est bien le nœud d'origine, COPIED sinon) ;
+# - my_merge : le sort de begin2 (nœuds consommés ou dupliqués) n'est
+#   pas spécifié — le harness ne libère QUE begin1 après l'appel et ne
+#   touche plus begin2 (un free de begin2 serait un double free chez
+#   un étudiant qui ré-insère ; une fuite bénigne chez celui qui
+#   duplique) ;
+# - free propre côté harness partout ailleurs (les data sont des
+#   littéraux : seuls les nœuds sont libérés).
+
+[project]
+name = "cpool_day11"
+type = "functions"
+allowed_functions = ["write", "malloc", "free"]
+tests_run_rule = false
+cflags = ["-Wall", "-Wextra", "-Iinclude"]
+
+[[task]]
+name = "my_params_to_list"
+delivery = "my_params_to_list.c"
+prototype = "linked_list_t *my_params_to_list(int ac, char * const *av)"
+harness = "cpool_day11/harness/main_my_params_to_list.c"
+extra_sources = ["cpool_day11/harness/list_common.c", "cpool_day11/harness/list_cmp.c"]
+stdout_file = "cpool_day11/expected/my_params_to_list.out"
+exit_code = 0
+timeout_ms = 2000
+
+[[task]]
+name = "my_list_size"
+delivery = "my_list_size.c"
+prototype = "int my_list_size(linked_list_t const *begin)"
+harness = "cpool_day11/harness/main_my_list_size.c"
+extra_sources = ["cpool_day11/harness/list_common.c", "cpool_day11/harness/list_cmp.c"]
+stdout_file = "cpool_day11/expected/my_list_size.out"
+exit_code = 0
+timeout_ms = 2000
+
+[[task]]
+name = "my_rev_list"
+delivery = "my_rev_list.c"
+prototype = "void my_rev_list(linked_list_t **begin)"
+harness = "cpool_day11/harness/main_my_rev_list.c"
+extra_sources = ["cpool_day11/harness/list_common.c", "cpool_day11/harness/list_cmp.c"]
+stdout_file = "cpool_day11/expected/my_rev_list.out"
+exit_code = 0
+timeout_ms = 2000
+
+[[task]]
+name = "my_apply_on_nodes"
+delivery = "my_apply_on_nodes.c"
+prototype = "int my_apply_on_nodes(linked_list_t *begin, int (*f)(void *))"
+harness = "cpool_day11/harness/main_my_apply_on_nodes.c"
+extra_sources = ["cpool_day11/harness/list_common.c", "cpool_day11/harness/list_cmp.c"]
+stdout_file = "cpool_day11/expected/my_apply_on_nodes.out"
+exit_code = 0
+timeout_ms = 2000
+
+[[task]]
+name = "my_apply_on_matching_nodes"
+delivery = "my_apply_on_matching_nodes.c"
+prototype = "int my_apply_on_matching_nodes(linked_list_t *begin, int (*f)(void *), void const *data_ref, int (*cmp)(void *, void const *))"
+harness = "cpool_day11/harness/main_my_apply_on_matching_nodes.c"
+extra_sources = ["cpool_day11/harness/list_common.c", "cpool_day11/harness/list_cmp.c"]
+stdout_file = "cpool_day11/expected/my_apply_on_matching_nodes.out"
+exit_code = 0
+timeout_ms = 2000
+
+[[task]]
+name = "my_find_node"
+delivery = "my_find_node.c"
+prototype = "linked_list_t *my_find_node(linked_list_t const *begin, void const *data_ref, int (*cmp)(void *, void const *))"
+harness = "cpool_day11/harness/main_my_find_node.c"
+extra_sources = ["cpool_day11/harness/list_common.c", "cpool_day11/harness/list_cmp.c"]
+stdout_file = "cpool_day11/expected/my_find_node.out"
+exit_code = 0
+timeout_ms = 2000
+
+[[task]]
+name = "my_delete_nodes"
+delivery = "my_delete_nodes.c"
+prototype = "int my_delete_nodes(linked_list_t **begin, void const *data_ref, int (*cmp)(void *, void const *))"
+harness = "cpool_day11/harness/main_my_delete_nodes.c"
+extra_sources = ["cpool_day11/harness/list_common.c", "cpool_day11/harness/list_cmp.c"]
+stdout_file = "cpool_day11/expected/my_delete_nodes.out"
+exit_code = 0
+timeout_ms = 2000
+
+[[task]]
+name = "my_concat_list"
+delivery = "my_concat_list.c"
+prototype = "void my_concat_list(linked_list_t **begin1, linked_list_t *begin2)"
+harness = "cpool_day11/harness/main_my_concat_list.c"
+extra_sources = ["cpool_day11/harness/list_common.c", "cpool_day11/harness/list_cmp.c"]
+stdout_file = "cpool_day11/expected/my_concat_list.out"
+exit_code = 0
+timeout_ms = 2000
+
+[[task]]
+name = "my_sort_list"
+delivery = "my_sort_list.c"
+prototype = "void my_sort_list(linked_list_t **begin, int (*cmp)(void *, void *))"
+harness = "cpool_day11/harness/main_my_sort_list.c"
+extra_sources = ["cpool_day11/harness/list_common.c", "cpool_day11/harness/list_cmp.c"]
+stdout_file = "cpool_day11/expected/my_sort_list.out"
+exit_code = 0
+timeout_ms = 2000
+
+[[task]]
+name = "my_add_in_sorted_list"
+delivery = "my_add_in_sorted_list.c"
+prototype = "void my_add_in_sorted_list(linked_list_t **begin, void *data, int (*cmp)(void *, void *))"
+harness = "cpool_day11/harness/main_my_add_in_sorted_list.c"
+extra_sources = ["cpool_day11/harness/list_common.c", "cpool_day11/harness/list_cmp.c"]
+stdout_file = "cpool_day11/expected/my_add_in_sorted_list.out"
+exit_code = 0
+timeout_ms = 2000
+
+[[task]]
+name = "my_merge"
+delivery = "my_merge.c"
+prototype = "void my_merge(linked_list_t **begin1, linked_list_t *begin2, int (*cmp)(void *, void *))"
+harness = "cpool_day11/harness/main_my_merge.c"
+extra_sources = ["cpool_day11/harness/list_common.c", "cpool_day11/harness/list_cmp.c"]
+stdout_file = "cpool_day11/expected/my_merge.out"
+exit_code = 0
+timeout_ms = 2000
