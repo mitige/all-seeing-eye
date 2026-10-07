@@ -1,0 +1,109 @@
+# Batterie cpool_day08 — C Pool Day08 « Compilation, Allocation ».
+#
+# 5 exercices (my_strdup, concat_params, my_show_word_array,
+# my_str_to_word_array, convert_base), trois appels système
+# autorisés côté étudiant — whitelist EXACTE des preliminaries du
+# sujet : « Allowed system function(s): write, malloc, free ».
+#
+# La vraie moulinette linke les tasks avec la libmy de l'étudiant
+# (lib/my/build.sh) ; la batterie locale, elle, ne compile QUE la
+# delivery de la task avec son harness (comme cpool_day03) : chaque
+# delivery doit donc être AUTO-SUFFISANTE — un appel à une fonction
+# externe de libmy (my_putstr, my_strlen…) serait un symbole
+# indéfini non whitelisté et ne linkeraient pas. Le sujet autorise
+# les forward declarations (C-H1 ignorée « until you discover header
+# files ») ; ici les includes système (<stdlib.h>, <unistd.h>)
+# suffisent et restent la voie propre.
+#
+# cflags SANS -Werror, comme cpool_day03 : la compile est jugée sur
+# le C, la norme par l'étape Norme. Sous epiclang, banana tourne à
+# la compile et ses diagnostics de style deviennent des erreurs avec
+# -Werror — dont la C-H1 (« function declaration in source file »),
+# structurellement inévitable dès qu'un étudiant forward-déclare une
+# fonction de sa libmy comme le sujet l'y invite explicitement. La
+# vraie moulinette ne bloque pas la compile sur le style ; nous non
+# plus.
+#
+# Sorties attendues : chaque harness affiche les résultats BRUTS de
+# la fonction, un marqueur « === » sur sa ligne séparant les cas —
+# il rend visible tout '\n' terminal parasite ou manquant.
+# - my_strdup : chaque doublon affiché suivi de '\n' ; le marqueur
+#   « SAME » apparaîtrait si le pointeur retourné était src lui-même
+#   (le sujet impose une NOUVELLE allocation) ; la chaîne vide doit
+#   donner une ligne vide ;
+# - concat_params : joint TOUT argv, argv[0] compris, séparés de
+#   '\n', SANS newline final (exemple du sujet : « ./concat_params$
+#   toto$ titi » sous cat -e — pas de '$' après titi) ; argv vide
+#   au milieu produit une ligne vide ;
+# - my_show_word_array : un mot par ligne, '\n' après CHAQUE mot, le
+#   dernier compris (sujet explicite) ; le tableau vide n'affiche
+#   rien ; les mots vides donnent des lignes vides ;
+# - my_str_to_word_array : le harness affiche un mot par ligne.
+#   Séparateurs = TOUS les caractères non alphanumériques (sujet) :
+#   espaces, tabulations, '\n', ponctuation — cas leading, trailing
+#   et séparateurs multiples couverts ; chiffres = caractères de mot
+#   (« a1 b2\tc3\n » → a1, b2, c3) ;
+# - convert_base : signes (« -2a », « +52 », « -+52 » — chaque '-'
+#   inverse la parité, sémantique getnbr_base), zéro, INT_MIN vers
+#   le binaire (32 chiffres + signe — le pire cas d'allocation),
+#   bases « 01 », « 0123456789abcdef », « 0123456789ABCDEF »,
+#   « 01234567 » et « poneyvif » (« -poney » base poneyvif = -668).
+#
+# Norme : sous epiclang, la signature CANONIQUE du sujet
+# « char * const *tab » (my_show_word_array) déclenche une C-V3
+# minor structurelle (« space after pointer symbol ») — la spelling
+# du sujet est conservée pour le check de prototype, exactement
+# comme la C-H1 structurelle de cpool_day03 : la faute est
+# rapportée, jamais bloquante (norme notée à part).
+
+[project]
+name = "cpool_day08"
+type = "functions"
+allowed_functions = ["write", "malloc", "free"]
+tests_run_rule = false
+cflags = ["-Wall", "-Wextra"]
+
+[[task]]
+name = "my_strdup"
+delivery = "my_strdup.c"
+prototype = "char *my_strdup(char const *src)"
+harness = "cpool_day08/harness/main_my_strdup.c"
+stdout_file = "cpool_day08/expected/my_strdup.out"
+exit_code = 0
+timeout_ms = 2000
+
+[[task]]
+name = "concat_params"
+delivery = "concat_params.c"
+prototype = "char *concat_params(int argc, char **argv)"
+harness = "cpool_day08/harness/main_concat_params.c"
+stdout_file = "cpool_day08/expected/concat_params.out"
+exit_code = 0
+timeout_ms = 2000
+
+[[task]]
+name = "my_show_word_array"
+delivery = "my_show_word_array.c"
+prototype = "int my_show_word_array(char * const *tab)"
+harness = "cpool_day08/harness/main_my_show_word_array.c"
+stdout_file = "cpool_day08/expected/my_show_word_array.out"
+exit_code = 0
+timeout_ms = 2000
+
+[[task]]
+name = "my_str_to_word_array"
+delivery = "my_str_to_word_array.c"
+prototype = "char **my_str_to_word_array(char const *str)"
+harness = "cpool_day08/harness/main_my_str_to_word_array.c"
+stdout_file = "cpool_day08/expected/my_str_to_word_array.out"
+exit_code = 0
+timeout_ms = 2000
+
+[[task]]
+name = "convert_base"
+delivery = "convert_base.c"
+prototype = "char *convert_base(char const *nbr, char const *base_from, char const *base_to)"
+harness = "cpool_day08/harness/main_convert_base.c"
+stdout_file = "cpool_day08/expected/convert_base.out"
+exit_code = 0
+timeout_ms = 2000
