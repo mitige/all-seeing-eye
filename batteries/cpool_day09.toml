@@ -1,0 +1,149 @@
+# Batterie cpool_day09 — C Pool Day09 « STRUCTURES ».
+#
+# 6 exercices. Appels système autorisés côté étudiant : write, malloc,
+# free. L'étudiant ne rend NI son main NI sa libmy : chaque task est
+# compilée avec le harness de la batterie (harness/main_<task>.c) et,
+# pour celles qui en dépendent, la LIBMY DE RÉFÉRENCE de la batterie
+# (lib/*.c en extra_sources) — la vraie moulinette linke la libmy de
+# l'étudiant (lib/my/build.sh, Day07) ; la batterie fournit les
+# implémentations de référence aux signatures et à la sémantique
+# canoniques (my_str_to_word_array : séparateurs espace/tab).
+#
+# cflags SANS -Werror, comme cpool_day03 : la compile est jugée sur le
+# C, la norme par l'étape Norme (la C-H1 « function declaration in
+# source file » est structurelle ici : le sujet interdit de rendre la
+# libmy, chaque delivery doit donc DÉCLARER les fonctions libmy
+# qu'elle appelle). Le « -x c » final est volontaire : deux deliveries
+# sont des HEADERS (include/my_macro_abs.h, include/my.h), compilés en
+# .o à l'étape Build comme toute delivery — sans `-x c`, cc produirait
+# un header PRÉCOMPILÉ (non-ELF), impossible à analyser par l'étape
+# Symboles ; avec `-x c`, le header est compilé comme une unité de
+# traduction C et donne un .o ELF propre. `-x c` est sans effet sur
+# les .c.
+#
+# Struct info_param : le sujet interdit de la rendre (« the tests set
+# will use its own ») — elle est donc définie À L'IDENTIQUE (champs,
+# ordre, commentaires compris) dans les harness de my_params_to_array
+# et my_show_param_array. Les deliveries la définissent aussi dans
+# leur propre TU (elles allouent et remplissent les cellules) :
+# deux TUs, deux définitions compatibles — le C classique.
+#
+# argv SYNTHÉTIQUE dans les harness 03/04 (« ./a.out », « hello
+# world », «  abc  def  », « x ») : le vrai av[0] du binaire de test
+# serait le chemin de la salle blanche, variable d'un run à l'autre —
+# un argv fixe garde l'exigence « including av[0] » testée ET la
+# sortie déterministe. Le harness 03 éprouve aussi l'indépendance de
+# `copy` (gribouillage de copy[0] puis réaffichage de str) et la
+# sentinelle finale (str == 0 → ligne « END »).
+#
+# Contraintes d'implémentation non vérifiables mécaniquement (notées
+# ici, assumées) : « only bit shifts » pour get_color et « with a
+# union » pour swap_endian_color — la batterie teste le COMPORTEMENT
+# (décalages RGB, inversion ARGB complète) ; l'étape Symboles garantit
+# au moins l'absence d'appel externe dans ces deux deliveries.
+#
+# Task my.h : le sujet demande les prototypes de TOUTE la libmy de
+# l'étudiant (vérifiables via nm chez Epitech). Ici, le plus fidèle
+# testable : le harness INCLUT le my.h rendu (-Iinclude) et appelle le
+# cœur canonique de toute libmy de Day09 (my_putchar, my_putstr,
+# my_put_nbr, my_strlen — vus aux Day03/04) ; le header doit être
+# auto-suffisant, protégé (C-H2) et compiler. Le prelim exige en plus
+# le prototype de my_putchar.
+
+[project]
+name = "cpool_day09"
+type = "functions"
+allowed_functions = [
+    "write",
+    "malloc",
+    "free",
+    "my_putchar",
+    "my_putstr",
+    "my_put_nbr",
+    "my_strlen",
+    "my_strdup",
+    "my_str_to_word_array",
+    "my_show_word_array",
+]
+tests_run_rule = false
+cflags = ["-Wall", "-Wextra", "-x", "c"]
+
+[[task]]
+name = "my_macro_abs"
+delivery = "include/my_macro_abs.h"
+prototype = "#define ABS(value)"
+harness = "cpool_day09/harness/main_my_macro_abs.c"
+include_dirs = ["include"]
+stdout_file = "cpool_day09/expected/my_macro_abs.out"
+exit_code = 0
+timeout_ms = 2000
+
+[[task]]
+name = "my_h"
+delivery = "include/my.h"
+prototype = "void my_putchar(char c)"
+harness = "cpool_day09/harness/main_my_h.c"
+extra_sources = [
+    "cpool_day09/lib/my_putchar.c",
+    "cpool_day09/lib/my_putstr.c",
+    "cpool_day09/lib/my_put_nbr.c",
+    "cpool_day09/lib/my_strlen.c",
+]
+include_dirs = ["include"]
+stdout_file = "cpool_day09/expected/my_h.out"
+exit_code = 0
+timeout_ms = 2000
+
+[[task]]
+name = "my_params_to_array"
+delivery = "my_params_to_array.c"
+prototype = "struct info_param *my_params_to_array(int ac, char **av)"
+harness = "cpool_day09/harness/main_my_params_to_array.c"
+extra_sources = [
+    "cpool_day09/lib/my_putchar.c",
+    "cpool_day09/lib/my_putstr.c",
+    "cpool_day09/lib/my_put_nbr.c",
+    "cpool_day09/lib/my_strlen.c",
+    "cpool_day09/lib/my_strdup.c",
+    "cpool_day09/lib/my_str_to_word_array.c",
+    "cpool_day09/lib/my_show_word_array.c",
+]
+stdout_file = "cpool_day09/expected/my_params_to_array.out"
+exit_code = 0
+timeout_ms = 2000
+
+[[task]]
+name = "my_show_param_array"
+delivery = "my_show_param_array.c"
+prototype = "int my_show_param_array(struct info_param const *par)"
+harness = "cpool_day09/harness/main_my_show_param_array.c"
+extra_sources = [
+    "cpool_day09/lib/my_putchar.c",
+    "cpool_day09/lib/my_putstr.c",
+    "cpool_day09/lib/my_put_nbr.c",
+    "cpool_day09/lib/my_strlen.c",
+    "cpool_day09/lib/my_strdup.c",
+    "cpool_day09/lib/my_str_to_word_array.c",
+    "cpool_day09/lib/my_show_word_array.c",
+]
+stdout_file = "cpool_day09/expected/my_show_param_array.out"
+exit_code = 0
+timeout_ms = 2000
+
+[[task]]
+name = "get_color"
+delivery = "get_color.c"
+prototype = "int get_color(unsigned char red, unsigned char green, unsigned char blue)"
+harness = "cpool_day09/harness/main_get_color.c"
+stdout_file = "cpool_day09/expected/get_color.out"
+exit_code = 0
+timeout_ms = 2000
+
+[[task]]
+name = "swap_endian_color"
+delivery = "swap_endian_color.c"
+prototype = "int swap_endian_color(int color)"
+harness = "cpool_day09/harness/main_swap_endian_color.c"
+stdout_file = "cpool_day09/expected/swap_endian_color.out"
+exit_code = 0
+timeout_ms = 2000
